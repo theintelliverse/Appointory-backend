@@ -4,8 +4,10 @@ const MedicalRecord = require('../models/MedicalRecord');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
 const twilio = require('twilio');
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_PHONE;
 const client = new twilio(
-    process.env.TWILIO_ACCOUNT_SID, 
+    twilioAccountSid,
     process.env.TWILIO_AUTH_TOKEN
 );
 // --- 🛠️ OPTIMIZED SMS SIMULATION (Twilio Rate Limit Protection) ---
@@ -16,7 +18,7 @@ const sendTwilioAlert = async (phone, message) => {
 
         await client.messages.create({
             body: message,
-            from: process.env.TWILIO_PHONE_NUMBER,
+            from: twilioPhoneNumber,
             to: formattedPhone
         });
 
@@ -35,7 +37,7 @@ exports.addToQueue = async (req, res) => {
         const { patientName, patientPhone, doctorId, visitType, isEmergency } = req.body;
         const clinicId = req.user.clinicId;
 
-        const today = new Date().setHours(0,0,0,0);
+        const today = new Date().setHours(0, 0, 0, 0);
         const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: today } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `T-${count + 1}`;
 
@@ -65,13 +67,13 @@ exports.selfCheckIn = async (req, res) => {
             doctorId,
             visitType: 'Walk-in',
             status: 'Pending-Approval',
-            isApproved: false 
+            isApproved: false
         });
 
-        res.status(201).json({ 
-            success: true, 
+        res.status(201).json({
+            success: true,
             message: "Request sent. Please check the screen for approval.",
-            id: newRequest._id 
+            id: newRequest._id
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -98,8 +100,8 @@ exports.approvePatient = async (req, res) => {
         const { id } = req.params;
         const { isEmergency } = req.body;
         const clinicId = req.user.clinicId;
-        
-        const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: new Date().setHours(0,0,0,0) } });
+
+        const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: new Date().setHours(0, 0, 0, 0) } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `P-${count + 1}`;
 
         const entry = await Queue.findByIdAndUpdate(id, {
@@ -117,8 +119,8 @@ exports.approvePatient = async (req, res) => {
 // 5️⃣ Start Consultation (SMS REMOVED - Patient is already in waiting room)
 exports.startConsultation = async (req, res) => {
     try {
-        const entry = await Queue.findByIdAndUpdate(req.params.id, { 
-            status: 'In-Consultation', startTime: Date.now() 
+        const entry = await Queue.findByIdAndUpdate(req.params.id, {
+            status: 'In-Consultation', startTime: Date.now()
         }, { new: true });
 
         if (!entry) return res.status(404).json({ message: "Patient not found" });
@@ -137,7 +139,7 @@ exports.referToLab = async (req, res) => {
         const { queueId } = req.params;
         const { testName } = req.body;
         const entry = await Queue.findByIdAndUpdate(queueId, {
-            status: 'Waiting', 
+            status: 'Waiting',
             currentStage: 'Lab-Pending',
             requiredTest: testName
         }, { new: true });
@@ -174,7 +176,7 @@ exports.completeVisit = async (req, res) => {
         const patient = await Patient.findOne({ phone: queueEntry.patientPhone });
         if (patient) {
             patient.medicalHistory.push({
-                visitId: queueEntry._id, 
+                visitId: queueEntry._id,
                 doctorName: queueEntry.doctorId.name,
                 clinicName: req.user.clinicName || "Our Clinic",
                 diagnosis: notes,
@@ -209,7 +211,7 @@ exports.completeVisit = async (req, res) => {
 // 9️⃣ Live Queue for Dashboard
 exports.getLiveQueue = async (req, res) => {
     try {
-        const queue = await Queue.find({ 
+        const queue = await Queue.find({
             clinicId: req.user.clinicId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] }
@@ -223,8 +225,8 @@ exports.getLiveQueue = async (req, res) => {
 // 🔟 Doctor spezifisch
 exports.getDoctorQueue = async (req, res) => {
     try {
-        const doctorId = req.user.id || req.user._id; 
-        const myQueue = await Queue.find({ 
+        const doctorId = req.user.id || req.user._id;
+        const myQueue = await Queue.find({
             clinicId: req.user.clinicId,
             doctorId: doctorId,
             isApproved: true,
@@ -307,22 +309,22 @@ exports.getPublicDoctorQueue = async (req, res) => {
         const { doctorId } = req.params;
         console.log("📺 TV Display requesting queue for Doctor ID:", doctorId);
 
-        const queue = await Queue.find({ 
+        const queue = await Queue.find({
             doctorId: doctorId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] } // Only show active patients
         })
-        .select('tokenNumber patientName status isEmergency createdAt') 
-        .sort({ 
-            status: 1,      // 'In-Consultation' first
-            isEmergency: -1, // Emergency second
-            createdAt: 1     // Oldest first
-        });
+            .select('tokenNumber patientName status isEmergency createdAt')
+            .sort({
+                status: 1,      // 'In-Consultation' first
+                isEmergency: -1, // Emergency second
+                createdAt: 1     // Oldest first
+            });
 
         console.log(`✅ Found ${queue.length} patients for display.`);
-        res.status(200).json({ 
-            success: true, 
-            data: queue 
+        res.status(200).json({
+            success: true,
+            data: queue
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

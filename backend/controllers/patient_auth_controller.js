@@ -7,8 +7,10 @@ const { getFirebaseAuth } = require('../utils/firebase_admin');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_PHONE;
 const client = new twilio(
-    process.env.TWILIO_ACCOUNT_SID,
+    twilioAccountSid,
     process.env.TWILIO_AUTH_TOKEN
 );
 
@@ -126,7 +128,7 @@ exports.sendOTP = async (req, res) => {
         let { phone } = req.body;
         if (!phone) return res.status(400).json({ message: "Phone number is required" });
 
-        if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
+        if (!twilioAccountSid || !process.env.TWILIO_AUTH_TOKEN || !twilioPhoneNumber) {
             return res.status(500).json({
                 success: false,
                 message: "OTP service is not configured. Please contact support."
@@ -145,7 +147,7 @@ exports.sendOTP = async (req, res) => {
         try {
             await client.messages.create({
                 body: `Your Swasthya Mitra OTP is: ${otp}. Valid for 5 minutes. Please do not share this with anyone.`,
-                from: process.env.TWILIO_PHONE_NUMBER,
+                from: twilioPhoneNumber,
                 to: formattedPhone
             });
 
