@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const mongoose = require('mongoose');
 
 const resolveMongoUri = () => {
@@ -6,7 +6,10 @@ const resolveMongoUri = () => {
         process.env.MONGO_URL,
         process.env.MONGODB_URI,
         process.env.MONGO_URI,
-        process.env.DATABASE_URL
+        process.env.DATABASE_URL,
+        process.env.MONGODB_URL,
+        process.env.MONGO_PUBLIC_URL,
+        process.env.MONGO_PRIVATE_URL
     ];
 
     const value = candidates.find((uri) => typeof uri === 'string' && uri.trim().length > 0);
@@ -25,7 +28,7 @@ const connectMongo = async () => {
     const mongoUri = resolveMongoUri();
 
     if (!mongoUri) {
-        console.error('Missing MongoDB URI. Set one of: MONGO_URL, MONGODB_URI, MONGO_URI, or DATABASE_URL.');
+        console.error('Missing MongoDB URI. Set one of: MONGO_URL, MONGODB_URI, MONGO_URI, DATABASE_URL, MONGODB_URL, MONGO_PUBLIC_URL, or MONGO_PRIVATE_URL.');
         return false;
     }
 

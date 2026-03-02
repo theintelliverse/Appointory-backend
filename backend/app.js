@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http'); // 🔑 Required for WebSockets
 const { Server } = require('socket.io'); // 🔑 Required for WebSockets
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const authRoutes = require('./routes/auth_routes');
 const patientAuthRoutes = require('./routes/patient_auth_routes');

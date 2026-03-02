@@ -1,6 +1,6 @@
 const cloudinary = require('cloudinary');   // ✅ NO .v2
 const CloudinaryStorage = require('multer-storage-cloudinary');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_NAME,
