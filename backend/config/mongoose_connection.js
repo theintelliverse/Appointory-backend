@@ -1,7 +1,18 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 
-const mongoUri = process.env.MONGO_URL || process.env.MONGODB_URI;
+const resolveMongoUri = () => {
+    const candidates = [
+        process.env.MONGO_URL,
+        process.env.MONGODB_URI,
+        process.env.MONGO_URI,
+        process.env.DATABASE_URL
+    ];
+
+    const value = candidates.find((uri) => typeof uri === 'string' && uri.trim().length > 0);
+    return value ? value.trim() : '';
+};
+
 const globalMongoose = global;
 
 if (!globalMongoose.__mongooseCache) {
@@ -11,8 +22,10 @@ if (!globalMongoose.__mongooseCache) {
 }
 
 const connectMongo = async () => {
+    const mongoUri = resolveMongoUri();
+
     if (!mongoUri) {
-        console.error('Missing MongoDB URI. Set MONGO_URL or MONGODB_URI in backend environment variables.');
+        console.error('Missing MongoDB URI. Set one of: MONGO_URL, MONGODB_URI, MONGO_URI, or DATABASE_URL.');
         return false;
     }
 
