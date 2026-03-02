@@ -1,21 +1,7 @@
-require('dotenv').config({ quiet: true });
+require('dotenv').config();
 const mongoose = require('mongoose');
 
-const resolveMongoUri = () => {
-    const candidates = [
-        process.env.MONGO_URL,
-        process.env.MONGODB_URI,
-        process.env.MONGO_URI,
-        process.env.DATABASE_URL,
-        process.env.MONGODB_URL,
-        process.env.MONGO_PUBLIC_URL,
-        process.env.MONGO_PRIVATE_URL
-    ];
-
-    const value = candidates.find((uri) => typeof uri === 'string' && uri.trim().length > 0);
-    return value ? value.trim() : '';
-};
-
+const mongoUri = process.env.MONGO_URL || process.env.MONGODB_URI;
 const globalMongoose = global;
 
 if (!globalMongoose.__mongooseCache) {
@@ -25,10 +11,8 @@ if (!globalMongoose.__mongooseCache) {
 }
 
 const connectMongo = async () => {
-    const mongoUri = resolveMongoUri();
-
     if (!mongoUri) {
-        console.error('Missing MongoDB URI. Set one of: MONGO_URL, MONGODB_URI, MONGO_URI, DATABASE_URL, MONGODB_URL, MONGO_PUBLIC_URL, or MONGO_PRIVATE_URL.');
+        console.error('Missing MongoDB URI. Set MONGO_URL or MONGODB_URI in backend environment variables.');
         return false;
     }
 
@@ -56,7 +40,7 @@ connectMongo()
     .catch((err) => {
         const isAtlasAllowlistError = /whitelist|IP that isn't whitelisted|not authorized/i.test(err.message || '');
         if (isAtlasAllowlistError) {
-            console.error('MongoDB connection error: Atlas IP is not allowlisted. Add 0.0.0.0/0 or your deployment provider egress IP in Atlas Network Access.');
+            console.error('MongoDB connection error: Atlas IP is not allowlisted. Add 0.0.0.0/0 or your Vercel egress IP in Atlas Network Access.');
             return;
         }
 

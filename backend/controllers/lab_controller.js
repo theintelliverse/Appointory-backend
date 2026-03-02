@@ -5,7 +5,7 @@ exports.uploadLabReport = async (req, res) => {
     console.log("🚀 [1] Controller Started: Upload request received.");
     try {
         const { patientPhone, queueId } = req.params;
-        
+
         // 🔍 DEBUG: Check File
         if (!req.file) {
             console.error("❌ [2] Error: req.file is missing.");
@@ -34,11 +34,26 @@ exports.uploadLabReport = async (req, res) => {
             });
         }
 
+        const uploadedUrl =
+            req.file?.path ||
+            req.file?.secure_url ||
+            req.file?.url ||
+            null;
+
+        if (!uploadedUrl) {
+            console.error("❌ [4] Upload object missing accessible URL:", req.file);
+            return res.status(500).json({
+                success: false,
+                message: "Upload succeeded but file URL could not be resolved."
+            });
+        }
+
         // 🗄️ Update Patient Documents
         patient.documents.push({
-            visitId: queueId, 
+            visitId: queueId,
             title: req.body.title || "Lab Report",
-            fileUrl: req.file.path, 
+            fileUrl: uploadedUrl,
+            secureUrl: req.file?.secure_url || uploadedUrl,
             fileType: req.body.fileType || "Diagnostic",
             uploadedAt: Date.now()
         });
@@ -64,16 +79,16 @@ exports.uploadLabReport = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Report published successfully.",
-            fileUrl: req.file.path
+            fileUrl: uploadedUrl
         });
 
     } catch (error) {
         console.error("💥 [FATAL ERROR]:", error);
         // Ensure we send a response even on crash
-        return res.status(500).json({ 
-            success: false, 
+        return res.status(500).json({
+            success: false,
             message: "Internal server error during upload.",
-            error: error.message 
+            error: error.message
         });
     }
 };
