@@ -1,6 +1,22 @@
 const Queue = require('../models/Queue');
 const Patient = require('../models/Patient');
 
+const normalizeToHttps = (url) => {
+    if (!url || typeof url !== 'string') {
+        return null;
+    }
+
+    if (url.startsWith('https://')) {
+        return url;
+    }
+
+    if (url.startsWith('http://')) {
+        return `https://${url.slice('http://'.length)}`;
+    }
+
+    return url;
+};
+
 exports.uploadLabReport = async (req, res) => {
     console.log("🚀 [1] Controller Started: Upload request received.");
     try {
@@ -34,13 +50,14 @@ exports.uploadLabReport = async (req, res) => {
             });
         }
 
-        const uploadedUrl =
-            req.file?.path ||
-            req.file?.secure_url ||
-            req.file?.url ||
-            null;
+        const secureUploadedUrl = normalizeToHttps(
+            req.file?.secure_url || req.file?.path || req.file?.url || null
+        );
+        const uploadedUrl = normalizeToHttps(
+            req.file?.path || req.file?.secure_url || req.file?.url || null
+        );
 
-        if (!uploadedUrl) {
+        if (!secureUploadedUrl || !uploadedUrl) {
             console.error("❌ [4] Upload object missing accessible URL:", req.file);
             return res.status(500).json({
                 success: false,
@@ -53,7 +70,7 @@ exports.uploadLabReport = async (req, res) => {
             visitId: queueId,
             title: req.body.title || "Lab Report",
             fileUrl: uploadedUrl,
-            secureUrl: req.file?.secure_url || uploadedUrl,
+            secureUrl: secureUploadedUrl,
             fileType: req.body.fileType || "Diagnostic",
             uploadedAt: Date.now()
         });
@@ -79,7 +96,8 @@ exports.uploadLabReport = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Report published successfully.",
-            fileUrl: uploadedUrl
+            fileUrl: uploadedUrl,
+            secureUrl: secureUploadedUrl
         });
 
     } catch (error) {
