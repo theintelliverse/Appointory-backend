@@ -1,30 +1,22 @@
 const nodemailer = require('nodemailer');
 
-const createTransporter = () => {
-    const { EMAIL_USER, EMAIL_PASS } = process.env;
-    if (!EMAIL_USER || !EMAIL_PASS) {
-        throw new Error('Email service is not configured. Set EMAIL_USER and EMAIL_PASS.');
-    }
-
-    return nodemailer.createTransport({
+const sendStaffCredentials = async (email, password, name, role, clinicName) => {
+    // Create transporter (Using Gmail)
+    const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
-            user: EMAIL_USER,
-            pass: EMAIL_PASS,
+            user: process.env.EMAIL_USER, // Your Gmail
+            pass: process.env.EMAIL_PASS, // Your App Password
         },
     });
-};
-
-const sendStaffCredentials = async (email, password, name, role, clinicName) => {
-    const transporter = createTransporter();
 
     const mailOptions = {
-        from: `"Swasthya-Mitra Support" <${process.env.EMAIL_USER}>`,
+        from: `"appointory Support" <${process.env.EMAIL_USER}>`,
         to: email,
         subject: `Welcome to ${clinicName} - Your Staff Credentials`,
         html: `
             <div style="font-family: sans-serif; padding: 20px; border: 1px solid #E8DDCB; border-radius: 20px;">
-                <h2 style="color: #422D0B;">Namaste, ${name}!</h2>
+                <h2 style="color: #422D0B;">Namaste, Dr. ${name}!</h2>
                 <p>You have been registered as a <b>${role}</b> at <b>${clinicName}</b>.</p>
                 <div style="background-color: #FFFBF5; padding: 15px; border-radius: 10px; margin: 20px 0;">
                     <p style="margin: 5px 0;"><b>Login Email:</b> ${email}</p>

@@ -1,27 +1,11 @@
 const Queue = require('../models/Queue');
 const Patient = require('../models/Patient');
 
-const normalizeToHttps = (url) => {
-    if (!url || typeof url !== 'string') {
-        return null;
-    }
-
-    if (url.startsWith('https://')) {
-        return url;
-    }
-
-    if (url.startsWith('http://')) {
-        return `https://${url.slice('http://'.length)}`;
-    }
-
-    return url;
-};
-
 exports.uploadLabReport = async (req, res) => {
     console.log("🚀 [1] Controller Started: Upload request received.");
     try {
         const { patientPhone, queueId } = req.params;
-
+        
         // 🔍 DEBUG: Check File
         if (!req.file) {
             console.error("❌ [2] Error: req.file is missing.");
@@ -50,27 +34,11 @@ exports.uploadLabReport = async (req, res) => {
             });
         }
 
-        const secureUploadedUrl = normalizeToHttps(
-            req.file?.secure_url || req.file?.path || req.file?.url || null
-        );
-        const uploadedUrl = normalizeToHttps(
-            req.file?.path || req.file?.secure_url || req.file?.url || null
-        );
-
-        if (!secureUploadedUrl || !uploadedUrl) {
-            console.error("❌ [4] Upload object missing accessible URL:", req.file);
-            return res.status(500).json({
-                success: false,
-                message: "Upload succeeded but file URL could not be resolved."
-            });
-        }
-
         // 🗄️ Update Patient Documents
         patient.documents.push({
-            visitId: queueId,
+            visitId: queueId, 
             title: req.body.title || "Lab Report",
-            fileUrl: uploadedUrl,
-            secureUrl: secureUploadedUrl,
+            fileUrl: req.file.path, 
             fileType: req.body.fileType || "Diagnostic",
             uploadedAt: Date.now()
         });
@@ -96,17 +64,16 @@ exports.uploadLabReport = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Report published successfully.",
-            fileUrl: uploadedUrl,
-            secureUrl: secureUploadedUrl
+            fileUrl: req.file.path
         });
 
     } catch (error) {
         console.error("💥 [FATAL ERROR]:", error);
         // Ensure we send a response even on crash
-        return res.status(500).json({
-            success: false,
+        return res.status(500).json({ 
+            success: false, 
             message: "Internal server error during upload.",
-            error: error.message
+            error: error.message 
         });
     }
 };

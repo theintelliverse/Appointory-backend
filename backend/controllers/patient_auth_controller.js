@@ -3,141 +3,28 @@ const Queue = require("../models/Queue");
 const User = require("../models/User");
 const { generateToken } = require('../utils/auth_helper');
 const MedicalRecord = require('../models/MedicalRecord');
-const { getFirebaseAuth } = require('../utils/firebase_admin');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
-const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_PHONE;
 const client = new twilio(
-    twilioAccountSid,
+    process.env.TWILIO_ACCOUNT_SID, 
     process.env.TWILIO_AUTH_TOKEN
 );
 
-const isMongoUnavailableError = (error) => {
-    const message = (error && error.message) ? error.message : '';
-    return /whitelist|IP that isn't whitelisted|not authorized|server selection|timed out|ECONNREFUSED|ENOTFOUND/i.test(message);
-};
-
-const isTwilioTrialRestriction = (error) => {
-    const message = (error && error.message) ? error.message : '';
-    const code = error && error.code;
-    return code === 21608 || /trial accounts cannot send messages to unverified numbers|is unverified/i.test(message);
-};
-
-const normalizeIndianPhone = (value) => {
-    if (!value || typeof value !== 'string') {
-        return null;
-    }
-
-    const digits = value.replace(/\D/g, '');
-    if (digits.length < 10) {
-        return null;
-    }
-
-    return digits.slice(-10);
-};
-
 // Temporary store for OTPs (In production, use Redis)
-let otpStore = {};
-
-/**
- * ✅ FIREBASE LOGIN
- * @route POST /api/patient/firebase-login
- */
-exports.firebaseLogin = async (req, res) => {
-    try {
-        const { idToken } = req.body;
-
-        if (!idToken || typeof idToken !== 'string') {
-            return res.status(400).json({
-                success: false,
-                message: 'Firebase ID token is required.'
-            });
-        }
-
-        const auth = getFirebaseAuth();
-        const decoded = await auth.verifyIdToken(idToken, true);
-
-        const normalizedPhone = normalizeIndianPhone(decoded.phone_number);
-        if (!normalizedPhone) {
-            return res.status(400).json({
-                success: false,
-                message: 'Phone number is missing or invalid in Firebase token.'
-            });
-        }
-
-        let patient = await Patient.findOne({ phone: normalizedPhone });
-
-        if (!patient) {
-            patient = await Patient.create({
-                name: decoded.name || 'Valued Patient',
-                phone: normalizedPhone
-            });
-        }
-
-        const token = generateToken({
-            id: patient._id,
-            role: 'patient',
-            phone: normalizedPhone
-        });
-
-        return res.status(200).json({
-            success: true,
-            token,
-            patient: {
-                id: patient._id,
-                name: patient.name,
-                phone: patient.phone
-            }
-        });
-    } catch (error) {
-        if (/Firebase Admin is not configured/i.test(error.message || '')) {
-            return res.status(500).json({
-                success: false,
-                message: 'Firebase server configuration is missing.'
-            });
-        }
-
-        if (/auth\/|Firebase ID token/i.test(error.message || '')) {
-            return res.status(401).json({
-                success: false,
-                message: 'Invalid or expired Firebase token.'
-            });
-        }
-
-        if (isMongoUnavailableError(error)) {
-            return res.status(503).json({
-                success: false,
-                message: 'Database is temporarily unavailable. Please try again shortly.'
-            });
-        }
-
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error'
-        });
-    }
-};
+let otpStore = {}; 
 
 /**
  * 1️⃣ SEND OTP (Real SMS via Twilio)
  */
 exports.sendOTP = async (req, res) => {
     try {
-        let { phone } = req.body;
+        let { phone } = req.body; 
         if (!phone) return res.status(400).json({ message: "Phone number is required" });
 
-        if (!twilioAccountSid || !process.env.TWILIO_AUTH_TOKEN || !twilioPhoneNumber) {
-            return res.status(500).json({
-                success: false,
-                message: "OTP service is not configured. Please contact support."
-            });
-        }
-
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10); 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
+        
         // Store with 5-minute expiry
         otpStore[cleanPhone] = { otp, expires: Date.now() + 300000 };
 
@@ -146,8 +33,8 @@ exports.sendOTP = async (req, res) => {
         // --- 🚀 REAL SMS CODE ---
         try {
             await client.messages.create({
-                body: `Your Swasthya Mitra OTP is: ${otp}. Valid for 5 minutes. Please do not share this with anyone.`,
-                from: twilioPhoneNumber,
+                body: `Your appointory OTP is: ${otp}. Valid for 5 minutes. Please do not share this with anyone.`,
+                from: process.env.TWILIO_PHONE_NUMBER,
                 to: formattedPhone
             });
 
@@ -158,23 +45,19 @@ exports.sendOTP = async (req, res) => {
             console.log("-----------------------------------------");
             */
 
-            res.status(200).json({
-                success: true,
-                message: "OTP sent successfully to your mobile."
+            res.status(200).json({ 
+                success: true, 
+                message: "OTP sent successfully to your mobile." 
             });
 
         } catch (smsError) {
             console.error("❌ Twilio Error:", smsError.message);
-            if (isTwilioTrialRestriction(smsError)) {
-                return res.status(400).json({
-                    success: false,
-                    message: "This number is not verified in your Twilio trial account. Verify it in Twilio, or upgrade your Twilio account."
-                });
-            }
-
-            return res.status(502).json({
-                success: false,
-                message: "Failed to send OTP. Please try again in a moment."
+            // Fallback for developers if SMS fails (optional: remove in final prod)
+            console.log(`Fallback OTP for ${cleanPhone}: ${otp}`);
+            
+            res.status(500).json({ 
+                success: false, 
+                message: "Failed to send SMS. Please check the phone number." 
             });
         }
 
@@ -189,7 +72,7 @@ exports.sendOTP = async (req, res) => {
 exports.verifyOTPForCheckin = async (req, res) => {
     try {
         let { phone, otp } = req.body;
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10); 
         const record = otpStore[cleanPhone];
 
         if (!record || record.otp !== otp || record.expires < Date.now()) {
@@ -226,7 +109,7 @@ exports.requestCheckIn = async (req, res) => {
             patientPhone: cleanPhone,
             visitType: visitType || 'Walk-in',
             status: 'Pending-Approval',
-            isApproved: false
+            isApproved: false 
         });
 
         if (req.io) {
@@ -257,7 +140,7 @@ exports.verifyLockerOTP = async (req, res) => {
             return res.status(400).json({ message: "Phone and OTP are required" });
         }
 
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10); 
         const record = otpStore[cleanPhone];
 
         if (!record || record.otp !== otp || record.expires < Date.now()) {
@@ -265,28 +148,28 @@ exports.verifyLockerOTP = async (req, res) => {
         }
 
         delete otpStore[cleanPhone];
-
+        
         const phoneRegex = new RegExp(cleanPhone + '$');
-
+        
         const [lockerPatient, medicalHistory] = await Promise.all([
             Patient.findOne({ phone: phoneRegex }),
             MedicalRecord.findOne({ patientPhone: phoneRegex })
         ]);
 
         if (!lockerPatient && !medicalHistory) {
-            return res.status(404).json({
+            return res.status(404).json({ 
                 success: false,
-                message: "No health records found for this number."
+                message: "No health records found for this number." 
             });
         }
 
         const userId = lockerPatient?._id || medicalHistory?._id;
         const userName = lockerPatient?.name || medicalHistory?.patientName || "Valued Patient";
 
-        const token = generateToken({
-            id: userId.toString(),
+        const token = generateToken({ 
+            id: userId.toString(), 
             phone: cleanPhone,
-            role: 'patient'
+            role: 'patient' 
         });
 
         /* --- CONSOLE LOG COMMENTED OUT ---
@@ -296,20 +179,13 @@ exports.verifyLockerOTP = async (req, res) => {
         res.status(200).json({
             success: true,
             token,
-            patient: {
-                name: userName,
-                phone: cleanPhone
+            patient: { 
+                name: userName, 
+                phone: cleanPhone 
             }
         });
     } catch (error) {
-        if (isMongoUnavailableError(error)) {
-            return res.status(503).json({
-                success: false,
-                message: "Database is temporarily unavailable. Please try again shortly."
-            });
-        }
-
-        return res.status(500).json({ success: false, message: "Internal server error" });
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
@@ -342,16 +218,16 @@ exports.getPublicQueueStatus = async (req, res) => {
         });
 
         res.status(200).json({
-            success: true,
-            data: {
-                patientName: entry.patientName,
-                tokenNumber: entry.tokenNumber,
-                status: entry.status,
-                clinicName: entry.clinicId.name,
-                peopleAhead,
-                estimatedWait: (peopleAhead * 12),
-                isDoctorOnBreak: !entry.doctorId.isAvailable
-            }
+          success: true,
+          data: {
+            patientName: entry.patientName,
+            tokenNumber: entry.tokenNumber,
+            status: entry.status,
+            clinicName: entry.clinicId.name,
+            peopleAhead,
+            estimatedWait: (peopleAhead * 12), 
+            isDoctorOnBreak: !entry.doctorId.isAvailable
+          }
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
