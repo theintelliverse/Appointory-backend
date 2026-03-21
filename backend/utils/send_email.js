@@ -1,15 +1,15 @@
 const nodemailer = require('nodemailer');
 
-const sendStaffCredentials = async (email, password, name, role, clinicName) => {
-    // Create transporter (Using Gmail)
-    const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-            user: process.env.EMAIL_USER, // Your Gmail
-            pass: process.env.EMAIL_PASS, // Your App Password
-        },
-    });
+// Create transporter (Using Gmail)
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER, // Your Gmail
+        pass: process.env.EMAIL_PASS, // Your App Password
+    },
+});
 
+const sendStaffCredentials = async (email, password, name, role, clinicName) => {
     const mailOptions = {
         from: `"appointory Support" <${process.env.EMAIL_USER}>`,
         to: email,
@@ -37,4 +37,20 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
     await transporter.sendMail(mailOptions);
 };
 
-module.exports = sendStaffCredentials;
+/**
+ * Generic email sender for password reset and other notifications
+ */
+const sendEmail = async (email, subject, html) => {
+    const mailOptions = {
+        from: `"Appointory Support" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: subject,
+        html: html
+    };
+
+    await transporter.sendMail(mailOptions);
+};
+
+module.exports = sendEmail;
+module.exports.sendStaffCredentials = sendStaffCredentials;
+module.exports.sendEmail = sendEmail;

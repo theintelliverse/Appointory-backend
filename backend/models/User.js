@@ -1,18 +1,18 @@
 const mongoose = require('../config/mongoose_connection');
 
 const userSchema = mongoose.Schema({
-  clinicId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Clinic', 
-    required: true 
+  clinicId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Clinic',
+    required: true
   },
   name: { type: String, required: true },
   email: { type: String, required: true },
   password: { type: String, required: true },
-  role: { 
-    type: String, 
-    enum: ['admin', 'doctor', 'receptionist', 'lab'], 
-    default: 'receptionist' 
+  role: {
+    type: String,
+    enum: ['admin', 'doctor', 'receptionist', 'lab'],
+    default: 'receptionist'
   },
   // Doctor-specific fields
   specialization: { type: String },
@@ -20,9 +20,13 @@ const userSchema = mongoose.Schema({
   profileImage: { type: String, default: "" },
   bio: { type: String },
   experience: { type: Number }, // years
-  education: { type: String } , 
+  education: { type: String },
   isActive: { type: Boolean, default: true }, // 🔑 Add this
-  deletedAt: { type: Date, default: null }
+  deletedAt: { type: Date, default: null },
+
+  // Password Reset
+  resetToken: { type: String, default: null },
+  resetTokenExpiry: { type: Date, default: null }
 }, { timestamps: true });
 
 // Ensures email is unique within a single clinic only

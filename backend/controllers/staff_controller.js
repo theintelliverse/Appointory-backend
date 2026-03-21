@@ -2,7 +2,7 @@ const User = require('../models/User');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient'); 
 const { hashPassword } = require('../utils/auth_helper');
-const sendStaffCredentials = require('../utils/send_email');
+const { sendStaffCredentials } = require('../utils/send_email');
 
 // --- ➕ ADD STAFF ---
 exports.addStaff = async (req, res) => {

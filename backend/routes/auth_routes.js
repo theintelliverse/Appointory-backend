@@ -10,6 +10,8 @@ const { protect, protectPatient } = require('../utils/auth_middleware');
  */
 router.post('/register-clinic', authController.registerClinic);
 router.post('/login', authController.loginStaff);
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password', authController.resetPassword);
 
 /**
  * 👤 STAFF PROFILE MANAGEMENT (PROTECTED)
@@ -21,9 +23,12 @@ router.patch('/update-profile', protect, authController.updateProfile);
  * 📱 PATIENT AUTH & PUBLIC STATUS (PUBLIC)
  */
 router.post('/patient/send-otp', patientController.sendOTP);
-router.post('/patient/verify-otp', patientController.verifyOTPForCheckin); 
+router.post('/patient/verify-otp', patientController.verifyOTPForCheckin);
 router.post('/patient/request-checkin', patientController.requestCheckIn);
 router.post('/patient/verify-locker', patientController.verifyLockerOTP);
+router.post('/patient/register', patientController.registerPatient);
+router.post('/patient/forgot-password', patientController.patientForgotPassword);
+router.post('/patient/reset-password', patientController.patientResetPassword);
 router.get('/queue/public/status/:queueId', patientController.getPublicQueueStatus);
 
 /**
@@ -31,5 +36,7 @@ router.get('/queue/public/status/:queueId', patientController.getPublicQueueStat
  * Hits: http://localhost:5000/api/auth/patient/profile
  */
 router.get('/patient/profile', protectPatient, getPatientProfile);
+router.post('/patient/book-appointment', protectPatient, patientController.bookAppointment);
+router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
 
 module.exports = router;

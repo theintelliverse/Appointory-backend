@@ -3,6 +3,7 @@ const Clinic = require('../models/Clinic');
 const MedicalRecord = require('../models/MedicalRecord');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
+const sendWhatsApp = require('../utils/send_whatsapp');
 const twilio = require('twilio');
 const client = new twilio(
     process.env.TWILIO_ACCOUNT_SID, 
@@ -106,7 +107,12 @@ exports.approvePatient = async (req, res) => {
             isApproved: true, status: 'Waiting', tokenNumber, isEmergency: !!isEmergency
         }, { new: true }).populate('clinicId', 'name');
 
-        // 📢 DEBUG LOG
+        // � Send WhatsApp notification to patient
+        const whatsappMessage = `👋 Hello ${entry.patientName}!\n\nYour appointment has been approved at ${entry.clinicId.name}.\n\n🎫 Token Number: ${tokenNumber}\n\nPlease arrive 10 minutes before your scheduled time.\n\nThank you!`;
+        
+        await sendWhatsApp(entry.patientPhone, whatsappMessage);
+
+        // �📢 DEBUG LOG
         console.log(`📢 Emit: queueUpdate (Approval) to Room: ${clinicId}`);
         if (req.io) req.io.to(clinicId.toString()).emit('queueUpdate');
 
@@ -114,14 +120,20 @@ exports.approvePatient = async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 };
 
-// 5️⃣ Start Consultation (SMS REMOVED - Patient is already in waiting room)
+// 5️⃣ Start Consultation (Send WhatsApp notification)
 exports.startConsultation = async (req, res) => {
     try {
         const entry = await Queue.findByIdAndUpdate(req.params.id, { 
             status: 'In-Consultation', startTime: Date.now() 
-        }, { new: true });
+        }, { new: true }).populate('doctorId', 'name');
 
         if (!entry) return res.status(404).json({ message: "Patient not found" });
+
+        // 📲 Send WhatsApp notification that consultation is starting
+        const doctorName = entry.doctorId?.name || 'Doctor';
+        const whatsappMessage = `🩺 Your appointment is starting!\n\nDoctor: ${doctorName}\n\nPlease report to the consultation room immediately.\n\nThank you for your patience!`;
+        
+        await sendWhatsApp(entry.patientPhone, whatsappMessage);
 
         // 📢 DEBUG LOG
         console.log(`📢 Emit: queueUpdate (Start) to Room: ${entry.clinicId}`);
@@ -193,6 +205,12 @@ exports.completeVisit = async (req, res) => {
             duration,
             visitDate: Date.now()
         });
+
+        // 📲 Send WhatsApp completion notification
+        const doctorName = queueEntry.doctorId?.name || 'Doctor';
+        const whatsappMessage = `✅ Your consultation with Dr. ${doctorName} has been completed!\n\nYour medical records have been saved securely.\n\n📋 You can view your health records anytime in your Health Locker.\n\nThank you for visiting us!\n\nGet well soon! 🙏`;
+        
+        await sendWhatsApp(queueEntry.patientPhone, whatsappMessage);
 
         const clinicId = queueEntry.clinicId.toString();
         await Queue.findByIdAndDelete(id);

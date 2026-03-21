@@ -7,7 +7,7 @@ const patientSchema = mongoose.Schema({
   age: { type: Number },
   gender: { type: String, enum: ['Male', 'Female', 'Other'] },
   bloodGroup: { type: String },
-  
+
   vitals: [{
     bloodPressure: String,
     pulseRate: String,
@@ -22,22 +22,33 @@ const patientSchema = mongoose.Schema({
 
   medicalHistory: [{
     // 🔑 ADD THIS: Link to the specific visit session
-    visitId: { type: String }, 
+    visitId: { type: String },
     date: { type: Date, default: Date.now },
     doctorName: String,
     clinicName: String,
-    diagnosis: String, 
+    diagnosis: String,
     symptoms: String,
     prescription: String
   }],
 
   documents: [{
     // 🔑 ADD THIS: Connects the file to the specific history entry above
-    visitId: { type: String }, 
+    visitId: { type: String },
     title: String,
-    fileUrl: String,   
+    fileUrl: String,
     fileType: { type: String, default: 'Report' },
     uploadedAt: { type: Date, default: Date.now }
+  }],
+
+  appointments: [{
+    queueId: { type: mongoose.Schema.Types.ObjectId, ref: 'Queue' },
+    clinicId: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
+    clinicName: String,
+    doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    doctorName: String,
+    appointmentDate: Date,
+    status: { type: String, enum: ['Scheduled', 'Completed', 'Cancelled'], default: 'Scheduled' },
+    createdAt: { type: Date, default: Date.now }
   }],
 
   visitedClinics: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' }],

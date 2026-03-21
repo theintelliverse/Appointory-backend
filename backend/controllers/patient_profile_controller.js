@@ -38,16 +38,36 @@ exports.getPatientProfile = async (req, res) => {
             });
         }
 
-        // 🧩 MERGE DATA
+        // 🧩 MERGE DATA - Map MedicalRecord to medicalHistory format
+        const medicalHistory = (visitHistory || []).map(visit => ({
+            visitId: visit._id,
+            date: visit.visitDate,
+            doctorName: visit.doctorId?.name || 'Unknown Doctor',
+            clinicName: visit.clinicId?.name || 'Unknown Clinic',
+            diagnosis: visit.notes?.split('\n')[0] || 'N/A', // Extract first line as diagnosis
+            symptoms: visit.notes || '',
+            prescription: visit.notes || '' // Use notes as prescription for now
+        }));
+
+        // 🧩 Merge documents from Patient model
+        const documents = lockerProfile?.documents || [];
+
+        // 🧩 Get vitals from Patient model (sorted by latest first)
+        const vitals = lockerProfile?.vitals ? [...lockerProfile.vitals].reverse() : [];
+
         const responseData = {
             name: lockerProfile?.name || visitHistory[0]?.patientName || "Valued Patient",
             phone: req.user.phone,
-            digitalLocker: lockerProfile?.documents || [], 
-            visitHistory: visitHistory || [], 
+            age: lockerProfile?.age,
+            gender: lockerProfile?.gender,
+            bloodGroup: lockerProfile?.bloodGroup,
+            documents: documents,  // ✅ Changed from digitalLocker
+            medicalHistory: medicalHistory,  // ✅ Changed from visitHistory
+            vitals: vitals,  // ✅ Added vitals array
             lastUpdated: Date.now()
         };
 
-         console.log(`✅ Success: ${responseData.digitalLocker}`);
+        console.log(`✅ Success: Documents count: ${documents.length}, Vitals count: ${vitals.length}`);
 
         res.status(200).json({ 
             success: true, 
