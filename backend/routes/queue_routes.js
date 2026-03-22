@@ -16,7 +16,8 @@ const {
     // 🆕 NEW GATEKEEPER ACTIONS
     getPendingRequests,
     approvePatient,
-    getPublicDoctorQueue
+    getPublicDoctorQueue,
+    updateVitals
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -56,6 +57,9 @@ router.get('/my-queue', authorize('doctor'), getDoctorQueue);
 // Status Management
 router.patch('/start/:id', authorize('receptionist', 'doctor'), startConsultation);
 router.patch('/complete/:id', authorize('receptionist', 'doctor'), completeVisit);
+
+// 🩺 VITALS UPDATE (Doctor)
+router.post('/update-vitals/:queueId', authorize('doctor'), updateVitals);
 
 // 🔬 Lab Referral Routes
 router.patch('/refer/lab/:queueId', authorize('receptionist', 'doctor'), referToLab);

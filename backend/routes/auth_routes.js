@@ -38,5 +38,6 @@ router.get('/queue/public/status/:queueId', patientController.getPublicQueueStat
 router.get('/patient/profile', protectPatient, getPatientProfile);
 router.post('/patient/book-appointment', protectPatient, patientController.bookAppointment);
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
+router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
 module.exports = router;

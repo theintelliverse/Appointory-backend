@@ -346,3 +346,69 @@ exports.getPublicDoctorQueue = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// 🆕 UPDATE VITALS FOR CURRENT PATIENT
+exports.updateVitals = async (req, res) => {
+    try {
+        const { queueId } = req.params;
+        const { bloodPressure, pulseRate, temperature, weight, bmi } = req.body;
+        const doctorId = req.user.id;
+
+        // Validate input
+        if (!queueId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Queue ID is required'
+            });
+        }
+
+        // Find the queue entry to get patient phone
+        const queueEntry = await Queue.findById(queueId);
+        if (!queueEntry) {
+            return res.status(404).json({
+                success: false,
+                message: 'Patient queue entry not found'
+            });
+        }
+
+        const { patientPhone } = queueEntry;
+
+        // Find patient by phone
+        const patient = await Patient.findOne({ phone: patientPhone });
+        if (!patient) {
+            return res.status(404).json({
+                success: false,
+                message: 'Patient profile not found'
+            });
+        }
+
+        // Create new vitals entry
+        const newVitals = {
+            bloodPressure,
+            pulseRate,
+            temperature,
+            weight,
+            bmi,
+            recordedBy: doctorId,
+            recordedAt: new Date()
+        };
+
+        // Add vitals to patient
+        patient.vitals.push(newVitals);
+        await patient.save();
+
+        console.log(`✅ Vitals updated for patient ${patientPhone}`);
+
+        res.status(200).json({
+            success: true,
+            message: 'Patient vitals updated successfully',
+            data: patient.vitals
+        });
+    } catch (error) {
+        console.error('❌ Error updating vitals:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update vitals: ' + error.message
+        });
+    }
+};

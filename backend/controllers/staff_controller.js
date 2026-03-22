@@ -220,6 +220,69 @@ exports.updatePatientProfile = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// 🆕 UPDATE PATIENT VITALS (Receptionist/Staff)
+exports.updatePatientVitals = async (req, res) => {
+    try {
+        const { phone } = req.params;
+        const { vitals } = req.body;
+
+        // Validate vitals data
+        if (!vitals || Object.keys(vitals).length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No vitals data provided'
+            });
+        }
+
+        // Find patient by last 10 digits
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+
+        if (!patient) {
+            return res.status(404).json({
+                success: false,
+                message: 'Patient not found'
+            });
+        }
+
+        // Add new vitals entry with timestamp and recorder info
+        const newVitalsEntry = {
+            bloodPressure: vitals.bloodPressure || undefined,
+            pulseRate: vitals.pulseRate || undefined,
+            temperature: vitals.temperature || undefined,
+            sugarLevel: vitals.sugarLevel || undefined,
+            weight: vitals.weight ? Number(vitals.weight) : undefined,
+            height: vitals.height ? Number(vitals.height) : undefined,
+            bmi: vitals.bmi ? Number(vitals.bmi) : undefined,
+            recordedBy: req.user.id,
+            recordedAt: new Date()
+        };
+
+        // Remove undefined fields
+        Object.keys(newVitalsEntry).forEach(key => 
+            newVitalsEntry[key] === undefined && delete newVitalsEntry[key]
+        );
+
+        patient.vitals.push(newVitalsEntry);
+        await patient.save();
+
+        console.log(`✅ Vitals updated for patient ${cleanPhone}`);
+
+        res.status(200).json({
+            success: true,
+            message: 'Patient vitals updated successfully',
+            data: patient.vitals
+        });
+    } catch (error) {
+        console.error('❌ Error updating vitals:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update vitals: ' + error.message
+        });
+    }
+};
+
 // --- 🗄️ ARCHIVE STAFF ---
 exports.archiveStaff = async (req, res) => {
     try {

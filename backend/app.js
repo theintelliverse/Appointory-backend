@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth_routes');
 const staffRoutes = require('./routes/staff_routes');
 const queueRoutes = require('./routes/queue_routes');
 const clinicroutes = require('./routes/clinic_routes');
+const callRoutes = require('./routes/call_routes');
 
 const app = express();
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
@@ -169,6 +170,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/queue', queueRoutes);
 app.use('/api/clinic', clinicroutes);
+app.use('/api/call', callRoutes);
 
 // Health Check
 app.get('/', (req, res) => {

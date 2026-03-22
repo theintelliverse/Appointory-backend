@@ -21,49 +21,72 @@ let otpStore = {};
 exports.sendOTP = async (req, res) => {
     try {
         let { phone } = req.body;
-        if (!phone) return res.status(400).json({ message: "Phone number is required" });
+
+        // ✅ Validate phone input
+        if (!phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number is required"
+            });
+        }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        // ✅ Validate phone length
+        if (cleanPhone.length !== 10) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid phone number. Please enter a 10-digit number."
+            });
+        }
+
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // Store with 5-minute expiry
+        // ✅ Store with 5-minute expiry
         otpStore[cleanPhone] = { otp, expires: Date.now() + 300000 };
+        console.log(`✅ OTP Generated for ${cleanPhone}: ${otp} (Expires in 5 min)`);
 
         const formattedPhone = `+91${cleanPhone}`;
 
         // --- 🚀 REAL SMS CODE ---
         try {
-            await client.messages.create({
+            // ✅ Check if Twilio credentials are configured
+            if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
+                throw new Error('Twilio credentials not configured');
+            }
+
+            const response = await client.messages.create({
                 body: `Your appointory OTP is: ${otp}. Valid for 5 minutes. Please do not share this with anyone.`,
                 from: process.env.TWILIO_PHONE_NUMBER,
                 to: formattedPhone
             });
 
-            /* --- CONSOLE LOGS COMMENTED OUT ---
-            console.log("-----------------------------------------");
-            console.log(`📱 SMS SENT TO: ${formattedPhone}`);
-            console.log(`🔑 OTP: ${otp}`);
-            console.log("-----------------------------------------");
-            */
+            console.log(`📱 SMS SENT successfully to ${formattedPhone} | SID: ${response.sid}`);
 
             res.status(200).json({
                 success: true,
-                message: "OTP sent successfully to your mobile."
+                message: "OTP sent successfully to your mobile. Please check your phone.",
+                debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
             });
 
         } catch (smsError) {
-            console.error("❌ Twilio Error:", smsError.message);
-            // Fallback for developers if SMS fails (optional: remove in final prod)
-            console.log(`Fallback OTP for ${cleanPhone}: ${otp}`);
+            console.error(`❌ Twilio SMS Error: ${smsError.message}`);
+            // ✅ Show fallback OTP in development mode for testing
+            console.log(`📋 DEVELOPMENT FALLBACK OTP for ${cleanPhone}: ${otp}`);
 
             res.status(500).json({
                 success: false,
-                message: "Failed to send SMS. Please check the phone number."
+                message: "Failed to send SMS. Please check the phone number and try again.",
+                debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
             });
         }
 
     } catch (error) {
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error(`❌ Send OTP Error: ${error.message}`);
+        res.status(500).json({
+            success: false,
+            message: "Error sending OTP. Please try again later."
+        });
     }
 };
 
@@ -137,30 +160,64 @@ exports.requestCheckIn = async (req, res) => {
 exports.verifyLockerOTP = async (req, res) => {
     try {
         let { phone, otp } = req.body;
+
+        // ✅ Validate input
         if (!phone || !otp) {
-            return res.status(400).json({ message: "Phone and OTP are required" });
+            return res.status(400).json({
+                success: false,
+                message: "Phone and OTP are required"
+            });
         }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
         const record = otpStore[cleanPhone];
 
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
-            return res.status(400).json({ message: "Invalid or expired OTP" });
+        // ✅ Check if OTP exists
+        if (!record) {
+            console.warn(`⚠️  No OTP found for phone: ${cleanPhone}`);
+            return res.status(400).json({
+                success: false,
+                message: "OTP not found. Please request a new OTP."
+            });
         }
 
+        // ✅ Check if OTP is correct
+        if (record.otp !== otp) {
+            console.warn(`⚠️  Invalid OTP attempt for phone: ${cleanPhone}`);
+            return res.status(400).json({
+                success: false,
+                message: "OTP is incorrect. Please try again."
+            });
+        }
+
+        // ✅ Check if OTP is expired
+        if (record.expires < Date.now()) {
+            delete otpStore[cleanPhone];
+            console.warn(`⚠️  Expired OTP for phone: ${cleanPhone}`);
+            return res.status(400).json({
+                success: false,
+                message: "OTP has expired. Please request a new OTP."
+            });
+        }
+
+        // ✅ OTP is valid, delete it
         delete otpStore[cleanPhone];
+        console.log(`✅ OTP verified for phone: ${cleanPhone}`);
 
         const phoneRegex = new RegExp(cleanPhone + '$');
 
+        // ✅ Look up patient and medical records
         const [lockerPatient, medicalHistory] = await Promise.all([
             Patient.findOne({ phone: phoneRegex }),
             MedicalRecord.findOne({ patientPhone: phoneRegex })
         ]);
 
+        // ✅ Check if patient exists
         if (!lockerPatient && !medicalHistory) {
+            console.warn(`⚠️  No health records found for phone: ${cleanPhone}`);
             return res.status(404).json({
                 success: false,
-                message: "No health records found for this number."
+                message: "No health records found for this number. Please register first."
             });
         }
 
@@ -173,12 +230,11 @@ exports.verifyLockerOTP = async (req, res) => {
             role: 'patient'
         });
 
-        /* --- CONSOLE LOG COMMENTED OUT ---
         console.log(`✅ Patient Verified: ${userName} (${cleanPhone})`);
-        */
 
         res.status(200).json({
             success: true,
+            message: "OTP verified successfully",
             token,
             patient: {
                 name: userName,
@@ -186,7 +242,12 @@ exports.verifyLockerOTP = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(500).json({ message: "Internal server error" });
+        console.error(`❌ Verify Locker OTP Error: ${error.message}`);
+        res.status(500).json({
+            success: false,
+            message: "Error verifying OTP. Please try again.",
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
@@ -372,9 +433,9 @@ exports.bookAppointment = async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Booking appointment error:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: error.message || 'Failed to book appointment. Please try again.' 
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to book appointment. Please try again.'
         });
     }
 };
@@ -497,5 +558,52 @@ exports.patientResetPassword = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * 🗑️ REMOVE BROKEN DOCUMENT from Patient Locker
+ */
+exports.removeDocument = async (req, res) => {
+    try {
+        const { documentId } = req.params;
+        const { phone } = req.body;
+
+        if (!documentId || !phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Document ID and phone number are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        // Find patient by phone
+        const patient = await Patient.findOne({ phone: cleanPhone });
+
+        if (!patient) {
+            return res.status(404).json({
+                success: false,
+                message: "Patient not found"
+            });
+        }
+
+        // Remove document from patient's documents array
+        patient.documents = patient.documents.filter(doc => doc._id.toString() !== documentId);
+        await patient.save();
+
+        console.log(`✅ Document ${documentId} removed from patient ${cleanPhone}`);
+
+        res.status(200).json({
+            success: true,
+            message: "Broken document removed from your health locker",
+            remainingDocuments: patient.documents.length
+        });
+    } catch (error) {
+        console.error('Error removing document:', error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to remove document: " + error.message
+        });
     }
 };
