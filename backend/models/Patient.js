@@ -28,7 +28,15 @@ const patientSchema = mongoose.Schema({
     clinicName: String,
     diagnosis: String,
     symptoms: String,
-    prescription: String
+    prescription: String,
+    medicines: [
+      {
+        name: String, // Medicine name (Kyare kai Vastu)
+        time: String, // When to take (Savar/Bapor/Sanj)
+        amount: String, // Per dose dosage
+        total: String // Total quantity to purchase
+      }
+    ]
   }],
 
   documents: [{

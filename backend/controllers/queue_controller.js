@@ -6,7 +6,7 @@ const Patient = require('../models/Patient');
 const sendWhatsApp = require('../utils/send_whatsapp');
 const twilio = require('twilio');
 const client = new twilio(
-    process.env.TWILIO_ACCOUNT_SID, 
+    process.env.TWILIO_ACCOUNT_SID,
     process.env.TWILIO_AUTH_TOKEN
 );
 // --- 🛠️ OPTIMIZED SMS SIMULATION (Twilio Rate Limit Protection) ---
@@ -36,7 +36,7 @@ exports.addToQueue = async (req, res) => {
         const { patientName, patientPhone, doctorId, visitType, isEmergency } = req.body;
         const clinicId = req.user.clinicId;
 
-        const today = new Date().setHours(0,0,0,0);
+        const today = new Date().setHours(0, 0, 0, 0);
         const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: today } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `T-${count + 1}`;
 
@@ -66,13 +66,13 @@ exports.selfCheckIn = async (req, res) => {
             doctorId,
             visitType: 'Walk-in',
             status: 'Pending-Approval',
-            isApproved: false 
+            isApproved: false
         });
 
-        res.status(201).json({ 
-            success: true, 
+        res.status(201).json({
+            success: true,
             message: "Request sent. Please check the screen for approval.",
-            id: newRequest._id 
+            id: newRequest._id
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -99,8 +99,8 @@ exports.approvePatient = async (req, res) => {
         const { id } = req.params;
         const { isEmergency } = req.body;
         const clinicId = req.user.clinicId;
-        
-        const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: new Date().setHours(0,0,0,0) } });
+
+        const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: new Date().setHours(0, 0, 0, 0) } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `P-${count + 1}`;
 
         const entry = await Queue.findByIdAndUpdate(id, {
@@ -109,7 +109,7 @@ exports.approvePatient = async (req, res) => {
 
         // � Send WhatsApp notification to patient
         const whatsappMessage = `👋 Hello ${entry.patientName}!\n\nYour appointment has been approved at ${entry.clinicId.name}.\n\n🎫 Token Number: ${tokenNumber}\n\nPlease arrive 10 minutes before your scheduled time.\n\nThank you!`;
-        
+
         await sendWhatsApp(entry.patientPhone, whatsappMessage);
 
         // �📢 DEBUG LOG
@@ -123,8 +123,8 @@ exports.approvePatient = async (req, res) => {
 // 5️⃣ Start Consultation (Send WhatsApp notification)
 exports.startConsultation = async (req, res) => {
     try {
-        const entry = await Queue.findByIdAndUpdate(req.params.id, { 
-            status: 'In-Consultation', startTime: Date.now() 
+        const entry = await Queue.findByIdAndUpdate(req.params.id, {
+            status: 'In-Consultation', startTime: Date.now()
         }, { new: true }).populate('doctorId', 'name');
 
         if (!entry) return res.status(404).json({ message: "Patient not found" });
@@ -132,7 +132,7 @@ exports.startConsultation = async (req, res) => {
         // 📲 Send WhatsApp notification that consultation is starting
         const doctorName = entry.doctorId?.name || 'Doctor';
         const whatsappMessage = `🩺 Your appointment is starting!\n\nDoctor: ${doctorName}\n\nPlease report to the consultation room immediately.\n\nThank you for your patience!`;
-        
+
         await sendWhatsApp(entry.patientPhone, whatsappMessage);
 
         // 📢 DEBUG LOG
@@ -149,7 +149,7 @@ exports.referToLab = async (req, res) => {
         const { queueId } = req.params;
         const { testName } = req.body;
         const entry = await Queue.findByIdAndUpdate(queueId, {
-            status: 'Waiting', 
+            status: 'Waiting',
             currentStage: 'Lab-Pending',
             requiredTest: testName
         }, { new: true });
@@ -178,7 +178,7 @@ exports.completeLabTask = async (req, res) => {
 exports.completeVisit = async (req, res) => {
     try {
         const { id } = req.params;
-        const { notes } = req.body;
+        const { notes, diagnosis, medicines } = req.body;
 
         const queueEntry = await Queue.findById(id).populate('doctorId');
         if (!queueEntry) return res.status(404).json({ message: "Session expired." });
@@ -186,22 +186,28 @@ exports.completeVisit = async (req, res) => {
         const patient = await Patient.findOne({ phone: queueEntry.patientPhone });
         if (patient) {
             patient.medicalHistory.push({
-                visitId: queueEntry._id, 
+                visitId: queueEntry._id,
                 doctorName: queueEntry.doctorId.name,
                 clinicName: req.user.clinicName || "Our Clinic",
-                diagnosis: notes,
-                date: Date.now()
+                diagnosis: diagnosis || notes,
+                date: Date.now(),
+                medicines: medicines || [],
+                symptoms: notes
             });
             await patient.save();
         }
 
         const duration = queueEntry.startTime ? Math.round((Date.now() - queueEntry.startTime) / 60000) : 0;
+
+        // Create medical record with diagnosis and medicines
         await MedicalRecord.create({
             clinicId: queueEntry.clinicId,
             doctorId: queueEntry.doctorId._id,
             patientName: queueEntry.patientName,
             patientPhone: queueEntry.patientPhone,
             notes: notes,
+            diagnosis: diagnosis,
+            medicines: medicines || [],
             duration,
             visitDate: Date.now()
         });
@@ -209,7 +215,7 @@ exports.completeVisit = async (req, res) => {
         // 📲 Send WhatsApp completion notification
         const doctorName = queueEntry.doctorId?.name || 'Doctor';
         const whatsappMessage = `✅ Your consultation with Dr. ${doctorName} has been completed!\n\nYour medical records have been saved securely.\n\n📋 You can view your health records anytime in your Health Locker.\n\nThank you for visiting us!\n\nGet well soon! 🙏`;
-        
+
         await sendWhatsApp(queueEntry.patientPhone, whatsappMessage);
 
         const clinicId = queueEntry.clinicId.toString();
@@ -227,7 +233,7 @@ exports.completeVisit = async (req, res) => {
 // 9️⃣ Live Queue for Dashboard
 exports.getLiveQueue = async (req, res) => {
     try {
-        const queue = await Queue.find({ 
+        const queue = await Queue.find({
             clinicId: req.user.clinicId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] }
@@ -241,8 +247,8 @@ exports.getLiveQueue = async (req, res) => {
 // 🔟 Doctor spezifisch
 exports.getDoctorQueue = async (req, res) => {
     try {
-        const doctorId = req.user.id || req.user._id; 
-        const myQueue = await Queue.find({ 
+        const doctorId = req.user.id || req.user._id;
+        const myQueue = await Queue.find({
             clinicId: req.user.clinicId,
             doctorId: doctorId,
             isApproved: true,
@@ -325,22 +331,22 @@ exports.getPublicDoctorQueue = async (req, res) => {
         const { doctorId } = req.params;
         console.log("📺 TV Display requesting queue for Doctor ID:", doctorId);
 
-        const queue = await Queue.find({ 
+        const queue = await Queue.find({
             doctorId: doctorId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] } // Only show active patients
         })
-        .select('tokenNumber patientName status isEmergency createdAt') 
-        .sort({ 
-            status: 1,      // 'In-Consultation' first
-            isEmergency: -1, // Emergency second
-            createdAt: 1     // Oldest first
-        });
+            .select('tokenNumber patientName status isEmergency createdAt')
+            .sort({
+                status: 1,      // 'In-Consultation' first
+                isEmergency: -1, // Emergency second
+                createdAt: 1     // Oldest first
+            });
 
         console.log(`✅ Found ${queue.length} patients for display.`);
-        res.status(200).json({ 
-            success: true, 
-            data: queue 
+        res.status(200).json({
+            success: true,
+            data: queue
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

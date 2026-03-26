@@ -39,15 +39,20 @@ exports.getPatientProfile = async (req, res) => {
         }
 
         // 🧩 MERGE DATA - Map MedicalRecord to medicalHistory format
-        const medicalHistory = (visitHistory || []).map(visit => ({
-            visitId: visit._id,
-            date: visit.visitDate,
-            doctorName: visit.doctorId?.name || 'Unknown Doctor',
-            clinicName: visit.clinicId?.name || 'Unknown Clinic',
-            diagnosis: visit.notes?.split('\n')[0] || 'N/A', // Extract first line as diagnosis
-            symptoms: visit.notes || '',
-            prescription: visit.notes || '' // Use notes as prescription for now
-        }));
+        const medicalHistory = (visitHistory || []).map(visit => {
+            const medicineData = visit.medicines || [];
+            console.log(`📋 Visit ${visit._id} - Medicines:`, medicineData); // Debug log
+            return {
+                visitId: visit._id,
+                date: visit.visitDate,
+                doctorName: visit.doctorId?.name || 'Unknown Doctor',
+                clinicName: visit.clinicId?.name || 'Unknown Clinic',
+                diagnosis: visit.diagnosis || visit.notes?.split('\n')[0] || 'N/A',
+                symptoms: visit.notes || '',
+                prescription: visit.notes || '', // Use notes as prescription for now
+                medicines: medicineData // Include medicines from MedicalRecord
+            };
+        });
 
         // 🧩 Merge documents from Patient model
         const documents = lockerProfile?.documents || [];

@@ -14,18 +14,18 @@ const queueSchema = mongoose.Schema({
     required: true
   },
   // 🆕 Changed to not required initially for Self-Check-in requests
-  tokenNumber: { type: String }, 
-  
+  tokenNumber: { type: String },
+
   status: {
     type: String,
     enum: ['Pending-Approval', 'Waiting', 'In-Consultation', 'Completed', 'Skipped'],
     default: 'Waiting'
   },
-  
+
   // 🆕 Gatekeeper flag
-  isApproved: { 
-    type: Boolean, 
-    default: false 
+  isApproved: {
+    type: Boolean,
+    default: false
   },
 
   visitType: {
@@ -33,16 +33,24 @@ const queueSchema = mongoose.Schema({
     enum: ['Walk-in', 'Appointment'],
     default: 'Walk-in'
   },
-  currentStage: { 
-    type: String, 
-    enum: ['Waiting', 'In-Consultation', 'Lab-Pending', 'Lab-Completed'], 
-    default: 'Waiting' 
+  currentStage: {
+    type: String,
+    enum: ['Waiting', 'In-Consultation', 'Lab-Pending', 'Lab-Completed'],
+    default: 'Waiting'
   },
   requiredTest: { type: String },
   isEmergency: { type: Boolean, default: false }, // Useful for priority sorting
   assignedLabStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  startTime: Date, 
-  endTime: Date,   
+  startTime: Date,
+  endTime: Date,
+  diagnosis: { type: String }, // Diagnosis from doctor
+  medicines: [
+    {
+      name: { type: String }, // Medicine name (Kyare kai Vastu)
+      amount: { type: String } // Dosage/Quantity (Ketla Amount)
+    }
+  ],
+  consultationNotes: { type: String }, // Consultation notes from doctor
   createdAt: { type: Date, default: Date.now }
 });
 
