@@ -7,7 +7,7 @@ const { protect } = require('../utils/auth_middleware');
  * 📞 DOCTOR CALL ROUTES
  */
 
-// ✅ Initiate call and send WhatsApp
+// ✅ Initiate call and send SMS notification
 router.post('/initiate-call', protect, callController.initiateCall);
 
 // ✅ Patient confirms call

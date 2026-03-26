@@ -2,8 +2,13 @@ const CallRequest = require('../models/CallRequest');
 const Patient = require('../models/Patient');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
-const sendWhatsApp = require('../utils/send_whatsapp');
+const twilio = require('twilio');
 const schedule = require('node-schedule');
+
+// Initialize Twilio client
+const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const client = twilio(accountSid, authToken);
 
 // Store scheduled jobs for cleanup
 const scheduledJobs = {};
@@ -62,19 +67,24 @@ exports.initiateCall = async (req, res) => {
 
         console.log(`📞 Call initiated from Dr. ${doctor.name} to ${cleanPhone} | Call ID: ${callRequest._id}`);
 
-        // ✅ Send Initial WhatsApp Message
-        const initialMessage = `🏥 Hi ${patient.name || 'there'}! 👋\n\nDr. ${doctor.name} is calling you for your appointment at ${clinic.name}.\n\nPlease reply with "Yes" or click below to confirm.\n\n⏰ We will remind you if you don't respond.`;
+        // ✅ Send Initial SMS Message
+        const initialMessage = `Hi ${patient.name || 'there'}! Dr. ${doctor.name} is calling you for your appointment at ${clinic.name}. Please reply "Yes" to confirm. We will remind you if you don't respond. - SwasthyaMitra`;
 
-        const whatsappResult = await sendWhatsApp(`+91${cleanPhone}`, initialMessage);
+        try {
+            const formattedPhone = `+91${cleanPhone}`;
+            const smsResult = await client.messages.create({
+                body: initialMessage,
+                from: process.env.TWILIO_PHONE_NUMBER,
+                to: formattedPhone
+            });
 
-        if (whatsappResult.success) {
-            callRequest.whatsappSent = true;
-            callRequest.whatsappMessageSid = whatsappResult.sid;
-            callRequest.whatsappSentAt = new Date();
+            callRequest.smsSent = true;
+            callRequest.smsMessageSid = smsResult.sid;
+            callRequest.smsSentAt = new Date();
             callRequest.status = 'notified';
             await callRequest.save();
 
-            console.log(`✅ Initial WhatsApp sent successfully | SID: ${whatsappResult.sid}`);
+            console.log(`✅ Initial SMS sent successfully | SID: ${smsResult.sid}`);
 
             // ✅ SCHEDULE REMINDER MESSAGES
             scheduleReminders(callRequest, doctor, clinic, patient);
@@ -86,26 +96,26 @@ exports.initiateCall = async (req, res) => {
                     doctorName: doctor.name,
                     patientName: patient.name,
                     patientPhone: cleanPhone,
-                    status: 'whatsappSent',
+                    status: 'smsSent',
                     timestamp: new Date()
                 });
 
                 // Emit to doctor's personal room
                 req.io.to(doctorId.toString()).emit('callStatusUpdate', {
                     callId: callRequest._id,
-                    message: `WhatsApp sent to ${patient.name}`,
+                    message: `SMS sent to ${patient.name}`,
                     status: 'sent'
                 });
             }
 
             return res.status(201).json({
                 success: true,
-                message: "WhatsApp notification sent to patient",
+                message: "SMS notification sent to patient",
                 callId: callRequest._id,
-                whatsappSid: whatsappResult.sid
+                smsSid: smsResult.sid
             });
-        } else {
-            console.error(`❌ Failed to send WhatsApp: ${whatsappResult.error}`);
+        } catch (smsError) {
+            console.error(`❌ Failed to send SMS: ${smsError.message}`);
 
             // Notify doctor of failure
             if (req.io) {
@@ -166,28 +176,33 @@ const scheduleReminders = async (callRequest, doctor, clinic, patient) => {
 };
 
 /**
- * 🔔 SEND REMINDER MESSAGE
+ * 🔔 SEND REMINDER MESSAGE (SMS)
  */
 const sendReminder = async (callRequest, doctor, clinic, patient, minutesAfter) => {
     try {
-        const reminderMessage = `🔔 Reminder: Dr. ${doctor.name} is still waiting for you at ${clinic.name}!\n\nPlease reply with "Yes" to confirm you're joining the consultation.`;
+        const reminderMessage = `Reminder: Dr. ${doctor.name} is still waiting for you at ${clinic.name}! Please reply "Yes" to confirm you're joining the consultation. - SwasthyaMitra`;
 
-        const reminderResult = await sendWhatsApp(`+91${callRequest.patientPhone}`, reminderMessage);
+        try {
+            const formattedPhone = `+91${callRequest.patientPhone}`;
+            const smsResult = await client.messages.create({
+                body: reminderMessage,
+                from: process.env.TWILIO_PHONE_NUMBER,
+                to: formattedPhone
+            });
 
-        if (reminderResult.success) {
             // Update call request with reminder details
             callRequest.remindersSent.push({
                 minutesAfter,
                 sentAt: new Date(),
-                messageSid: reminderResult.sid,
+                messageSid: smsResult.sid,
                 status: 'sent'
             });
             callRequest.status = 'reminded';
             await callRequest.save();
 
-            console.log(`✅ ${minutesAfter}-minute reminder sent | SID: ${reminderResult.sid}`);
-        } else {
-            console.error(`❌ Failed to send ${minutesAfter}-minute reminder: ${reminderResult.error}`);
+            console.log(`✅ ${minutesAfter}-minute SMS reminder sent | SID: ${smsResult.sid}`);
+        } catch (smsError) {
+            console.error(`❌ Failed to send ${minutesAfter}-minute SMS reminder: ${smsError.message}`);
 
             callRequest.remindersSent.push({
                 minutesAfter,

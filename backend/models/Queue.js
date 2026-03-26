@@ -40,6 +40,8 @@ const queueSchema = mongoose.Schema({
   },
   requiredTest: { type: String },
   isEmergency: { type: Boolean, default: false }, // Useful for priority sorting
+  appointmentDate: { type: Date }, // For scheduled appointments - when patient booked
+  reason: { type: String }, // Reason for visit - why patient is scheduling appointment
   assignedLabStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   startTime: Date,
   endTime: Date,

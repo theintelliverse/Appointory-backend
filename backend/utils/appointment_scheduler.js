@@ -1,11 +1,16 @@
 /**
  * Appointment Reminder Scheduler
- * Schedules WhatsApp messages to be sent 15 min and 5 min before appointment
+ * Schedules SMS messages to be sent 15 min and 5 min before appointment
  */
 
 const schedule = require('node-schedule');
-const sendWhatsApp = require('./send_whatsapp');
+const twilio = require('twilio');
 const Queue = require('../models/Queue');
+
+// Initialize Twilio client
+const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const client = twilio(accountSid, authToken);
 
 // In-memory store of scheduled jobs
 const scheduledReminders = new Map();
@@ -40,16 +45,31 @@ async function scheduleAppointmentReminders(queueId, patientPhone, estimatedDura
             
             const job15 = schedule.scheduleJob(jobId15, reminder15MinTime, async () => {
                 try {
-                    const message15 = `⏰ Reminder: Your consultation with Dr. ${doctorName} is ending soon!\n\nPlease wrap up in about 15 minutes. Thank you! 🙏`;
-                    await sendWhatsApp(patientPhone, message15);
-                    console.log(`✅ 15-min reminder sent for ${queueId}`);
+                    const message15 = `⏰ Reminder: Your consultation with Dr. ${doctorName} is ending soon! Please wrap up in about 15 minutes. Thank you! - SwasthyaMitra`;
+                    
+                    // Send SMS instead of WhatsApp
+                    if (patientPhone) {
+                        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+                        const formattedPhone = `+91${cleanPhone}`;
+                        
+                        try {
+                            await client.messages.create({
+                                body: message15,
+                                from: process.env.TWILIO_PHONE_NUMBER,
+                                to: formattedPhone
+                            });
+                            console.log(`✅ 15-min SMS reminder sent for ${queueId} to ${formattedPhone}`);
+                        } catch (smsError) {
+                            console.error('Error sending 15-min SMS reminder:', smsError.message);
+                        }
+                    }
                 } catch (error) {
-                    console.error('Error sending 15-min reminder:', error);
+                    console.error('Error scheduling 15-min reminder:', error);
                 }
             });
 
             scheduledReminders.set(jobId15, job15);
-            console.log(`📅 Scheduled 15-min reminder for ${queueId} at ${reminder15MinTime.toLocaleTimeString()}`);
+            console.log(`📅 Scheduled 15-min SMS reminder for ${queueId} at ${reminder15MinTime.toLocaleTimeString()}`);
         }
 
         // 5-minute reminder
@@ -58,16 +78,31 @@ async function scheduleAppointmentReminders(queueId, patientPhone, estimatedDura
             
             const job5 = schedule.scheduleJob(jobId5, reminder5MinTime, async () => {
                 try {
-                    const message5 = `⏰ Final Reminder: Your appointment is ending in 5 minutes!\n\nPlease conclude the consultation. Thank you! 🙏`;
-                    await sendWhatsApp(patientPhone, message5);
-                    console.log(`✅ 5-min reminder sent for ${queueId}`);
+                    const message5 = `⏰ Final Reminder: Your appointment is ending in 5 minutes! Please conclude the consultation. Thank you! - SwasthyaMitra`;
+                    
+                    // Send SMS instead of WhatsApp
+                    if (patientPhone) {
+                        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+                        const formattedPhone = `+91${cleanPhone}`;
+                        
+                        try {
+                            await client.messages.create({
+                                body: message5,
+                                from: process.env.TWILIO_PHONE_NUMBER,
+                                to: formattedPhone
+                            });
+                            console.log(`✅ 5-min SMS reminder sent for ${queueId} to ${formattedPhone}`);
+                        } catch (smsError) {
+                            console.error('Error sending 5-min SMS reminder:', smsError.message);
+                        }
+                    }
                 } catch (error) {
-                    console.error('Error sending 5-min reminder:', error);
+                    console.error('Error scheduling 5-min reminder:', error);
                 }
             });
 
             scheduledReminders.set(jobId5, job5);
-            console.log(`📅 Scheduled 5-min reminder for ${queueId} at ${reminder5MinTime.toLocaleTimeString()}`);
+            console.log(`📅 Scheduled 5-min SMS reminder for ${queueId} at ${reminder5MinTime.toLocaleTimeString()}`);
         }
 
         return {

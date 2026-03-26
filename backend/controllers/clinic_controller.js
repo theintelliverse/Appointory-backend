@@ -35,7 +35,19 @@ exports.getClinicProfile = async (req, res) => {
  */
 exports.updateClinicSettings = async (req, res) => {
     try {
-        const { name, address, contactNumber, clinicCode } = req.body;
+        const {
+            name,
+            address,
+            contactNumber,
+            contactPhone,
+            clinicCode,
+            openingTime,
+            closingTime,
+            breakStartTime,
+            breakEndTime,
+            slotDurationMinutes,
+            workingDays
+        } = req.body;
         const clinicId = req.user.clinicId;
 
         // 1. Unique Clinic Code Validation
@@ -58,8 +70,14 @@ exports.updateClinicSettings = async (req, res) => {
             {
                 name,
                 address,
-                contactNumber,
-                clinicCode: clinicCode ? clinicCode.toUpperCase() : undefined
+                contactPhone: contactPhone || contactNumber,
+                clinicCode: clinicCode ? clinicCode.toUpperCase() : undefined,
+                openingTime,
+                closingTime,
+                breakStartTime,
+                breakEndTime,
+                slotDurationMinutes,
+                workingDays
             },
             { new: true, runValidators: true }
         );
@@ -119,7 +137,7 @@ exports.getAllClinics = async (req, res) => {
         
         const User = require('../models/User');
         
-        const clinics = await Clinic.find({ isActive: true }).select('_id name address contactPhone clinicCode');
+        const clinics = await Clinic.find({ isActive: true }).select('_id name address contactPhone clinicCode openingTime closingTime breakStartTime breakEndTime slotDurationMinutes workingDays');
         
         // For each clinic, fetch the count of active doctors
         const clinicsWithDoctorCount = await Promise.all(
