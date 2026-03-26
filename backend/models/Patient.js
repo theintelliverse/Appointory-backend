@@ -1,9 +1,11 @@
 // --- UPDATED Patient.js ---
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const patientSchema = mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true, unique: true },
+  passwordHash: { type: String }, // Password hash for login
   age: { type: Number },
   gender: { type: String, enum: ['Male', 'Female', 'Other'] },
   bloodGroup: { type: String },

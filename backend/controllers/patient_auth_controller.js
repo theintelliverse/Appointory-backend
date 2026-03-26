@@ -4,6 +4,7 @@ const User = require("../models/User");
 const Clinic = require("../models/Clinic");
 const { generateToken } = require('../utils/auth_helper');
 const MedicalRecord = require('../models/MedicalRecord');
+const bcrypt = require('bcryptjs');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
@@ -20,7 +21,7 @@ let otpStore = {};
  */
 exports.sendOTP = async (req, res) => {
     try {
-        let { phone } = req.body;
+        let { phone, isRegistration } = req.body;
 
         // ✅ Validate phone input
         if (!phone) {
@@ -38,6 +39,18 @@ exports.sendOTP = async (req, res) => {
                 success: false,
                 message: "Invalid phone number. Please enter a 10-digit number."
             });
+        }
+
+        // ✅ CHECK FOR DUPLICATE REGISTRATION (If isRegistration flag is true)
+        if (isRegistration) {
+            const existingPatient = await Patient.findOne({ phone: cleanPhone });
+            if (existingPatient) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This phone number is already registered. Please login instead.",
+                    isDuplicate: true
+                });
+            }
         }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -604,6 +617,217 @@ exports.removeDocument = async (req, res) => {
         res.status(500).json({
             success: false,
             message: "Failed to remove document: " + error.message
+        });
+    }
+};
+
+/**
+ * 🔐 PASSWORD-BASED LOGIN
+ */
+exports.patientLoginWithPassword = async (req, res) => {
+    try {
+        const { phone, password } = req.body;
+
+        if (!phone || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number and password are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const patient = await Patient.findOne({ phone: cleanPhone });
+
+        if (!patient) {
+            return res.status(404).json({
+                success: false,
+                message: "Patient not found. Please register first."
+            });
+        }
+
+        if (!patient.passwordHash) {
+            return res.status(400).json({
+                success: false,
+                message: "No password set. Please use OTP login or create a password during registration."
+            });
+        }
+
+        // Compare password
+        const isPasswordValid = await bcrypt.compare(password, patient.passwordHash);
+        if (!isPasswordValid) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid password. Please try again."
+            });
+        }
+
+        // Generate token
+        const token = generateToken({
+            id: patient._id.toString(),
+            phone: cleanPhone,
+            role: 'patient'
+        });
+
+        console.log(`✅ Patient Login Success: ${patient.name} (${cleanPhone})`);
+
+        res.status(200).json({
+            success: true,
+            message: "Login successful",
+            token,
+            patient: {
+                id: patient._id,
+                name: patient.name,
+                phone: cleanPhone
+            }
+        });
+    } catch (error) {
+        console.error('Login Error:', error);
+        res.status(500).json({
+            success: false,
+            message: "Login failed. Please try again."
+        });
+    }
+};
+
+/**
+ * 📝 REGISTER + OTP VERIFICATION + CREATE PASSWORD
+ */
+exports.registerWithOTPAndPassword = async (req, res) => {
+    try {
+        const { phone, otp, name, age, gender, bloodGroup, password } = req.body;
+
+        if (!phone || !otp || !name || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone, OTP, name, and password are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        // Verify OTP
+        const record = otpStore[cleanPhone];
+        if (!record || record.otp !== otp || record.expires < Date.now()) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid or expired OTP"
+            });
+        }
+
+        // Delete OTP after verification
+        delete otpStore[cleanPhone];
+
+        // Check if patient already exists
+        const existingPatient = await Patient.findOne({ phone: cleanPhone });
+        if (existingPatient) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number already registered"
+            });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create patient
+        const newPatient = await Patient.create({
+            phone: cleanPhone,
+            name,
+            passwordHash: hashedPassword,
+            age: age ? parseInt(age) : null,
+            gender: gender || null,
+            bloodGroup: bloodGroup || null
+        });
+
+        // Generate token
+        const token = generateToken({
+            id: newPatient._id.toString(),
+            phone: cleanPhone,
+            role: 'patient'
+        });
+
+        console.log(`✅ New Patient Registered: ${newPatient.name} (${cleanPhone})`);
+
+        res.status(201).json({
+            success: true,
+            message: "Registration successful",
+            token,
+            patient: {
+                id: newPatient._id,
+                name: newPatient.name,
+                phone: cleanPhone
+            }
+        });
+    } catch (error) {
+        console.error('Registration Error:', error);
+        res.status(500).json({
+            success: false,
+            message: "Registration failed: " + error.message
+        });
+    }
+};
+
+/**
+ * 🔑 CHANGE PASSWORD WITH OTP
+ */
+exports.changePasswordWithOTP = async (req, res) => {
+    try {
+        const { phone, otp, newPassword } = req.body;
+
+        if (!phone || !otp || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone, OTP, and new password are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        // Verify OTP
+        const record = otpStore[cleanPhone];
+        if (!record || record.otp !== otp || record.expires < Date.now()) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid or expired OTP"
+            });
+        }
+
+        // Delete OTP after verification
+        delete otpStore[cleanPhone];
+
+        // Find patient
+        const patient = await Patient.findOne({ phone: cleanPhone });
+        if (!patient) {
+            return res.status(404).json({
+                success: false,
+                message: "Patient not found"
+            });
+        }
+
+        // Validate password strength (at least 6 characters)
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 6 characters long"
+            });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        patient.passwordHash = hashedPassword;
+        await patient.save();
+
+        console.log(`✅ Password Changed for: ${patient.name} (${cleanPhone})`);
+
+        res.status(200).json({
+            success: true,
+            message: "Password changed successfully"
+        });
+    } catch (error) {
+        console.error('Change Password Error:', error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to change password: " + error.message
         });
     }
 };

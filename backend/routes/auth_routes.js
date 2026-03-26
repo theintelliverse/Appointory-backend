@@ -29,6 +29,10 @@ router.post('/patient/verify-locker', patientController.verifyLockerOTP);
 router.post('/patient/register', patientController.registerPatient);
 router.post('/patient/forgot-password', patientController.patientForgotPassword);
 router.post('/patient/reset-password', patientController.patientResetPassword);
+// 🆕 NEW PASSWORD-BASED AUTHENTICATION ROUTES
+router.post('/patient/login-with-password', patientController.patientLoginWithPassword);
+router.post('/patient/register-with-otp-password', patientController.registerWithOTPAndPassword);
+router.post('/patient/change-password-with-otp', patientController.changePasswordWithOTP);
 router.get('/queue/public/status/:queueId', patientController.getPublicQueueStatus);
 
 /**
