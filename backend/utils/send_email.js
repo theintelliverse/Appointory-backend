@@ -31,32 +31,60 @@ const createTransporter = () => {
 };
 
 let transporter = null;
+let emailServiceReady = false;
 
-// Initialize transporter safely
-try {
-    if (validateEmailConfig()) {
+// Initialize transporter safely with proper async handling
+const initializeEmailService = async () => {
+    try {
+        if (!validateEmailConfig()) {
+            console.log('⚠️  Email service disabled: Credentials not configured');
+            return;
+        }
+
         transporter = createTransporter();
+        console.log('📧 Initializing email service...');
 
-        // ✅ Test the connection at startup
-        transporter.verify((error, success) => {
-            if (error) {
-                console.error('❌ EMAIL TRANSPORTER VERIFICATION FAILED:', error.message);
-                console.error('📝 Troubleshooting Steps:');
-                console.error('   1. Check your EMAIL_USER and EMAIL_PASS in .env file');
-                console.error('   2. If using Gmail with 2FA enabled:');
-                console.error('      - Generate an App Password at: https://myaccount.google.com/apppasswords');
-                console.error('      - Use the 16-character app password in EMAIL_PASS');
-                console.error('   3. If still having issues, check Gmail security settings:');
-                console.error('      - Allow "Less secure app access": https://www.google.com/accounts/DisplayUnlockCaptcha');
-                transporter = null; // Disable email service if verification fails
-            } else {
-                console.log('✅ EMAIL SERVICE INITIALIZED SUCCESSFULLY');
-                console.log(`   Verified with: ${process.env.EMAIL_USER}`);
-            }
+        // Test connection with promise wrapper
+        return new Promise((resolve, reject) => {
+            transporter.verify((error, success) => {
+                if (error) {
+                    console.error('❌ EMAIL TRANSPORTER VERIFICATION FAILED:', error.message);
+                    console.error('📝 Troubleshooting Steps:');
+                    console.error('   1. Check your EMAIL_USER and EMAIL_PASS in environment variables');
+                    console.error('   2. If using Gmail with 2FA enabled:');
+                    console.error('      - Generate an App Password at: https://myaccount.google.com/apppasswords');
+                    console.error('      - Use the 16-character app password in EMAIL_PASS');
+                    console.error('   3. Check these specific Gmail security settings:');
+                    console.error('      - Go to: https://myaccount.google.com/security');
+                    console.error('      - Enable "Less secure app access" if 2FA is not enabled');
+                    console.error('      - Or use an App Password if 2FA is enabled');
+                    transporter = null;
+                    emailServiceReady = false;
+                    reject(error);
+                } else {
+                    console.log('✅ EMAIL SERVICE INITIALIZED SUCCESSFULLY');
+                    console.log(`   Verified with: ${process.env.EMAIL_USER}`);
+                    emailServiceReady = true;
+                    resolve();
+                }
+            });
         });
+    } catch (error) {
+        console.error('⚠️  EMAIL SERVICE INITIALIZATION ERROR:', error.message);
+        transporter = null;
+        emailServiceReady = false;
+        throw error;
     }
-} catch (error) {
-    console.error('⚠️  EMAIL SERVICE INITIALIZATION WARNING:', error.message);
+};
+
+// Initialize email service immediately (non-blocking with error handling)
+if (validateEmailConfig()) {
+    initializeEmailService().catch(error => {
+        console.error('⚠️  Email service will not be available:', error.message);
+        // Don't crash the app, just log a warning
+    });
+} else {
+    console.log('⚠️  Email service disabled: EMAIL_USER and EMAIL_PASS not configured');
 }
 
 const sendStaffCredentials = async (email, password, name, role, clinicName) => {
@@ -209,6 +237,14 @@ const sendEmail = async (email, subject, html) => {
             console.error('❌ Email service is not initialized');
             console.error(`   EMAIL_USER configured: ${!!process.env.EMAIL_USER}`);
             console.error(`   EMAIL_PASS configured: ${!!process.env.EMAIL_PASS}`);
+            console.error(`   Email service ready: ${emailServiceReady}`);
+
+            // If credentials are set but service isn't ready, it's likely still initializing
+            if (process.env.EMAIL_USER && process.env.EMAIL_PASS && !emailServiceReady) {
+                console.error('   ⏳ Email service is still initializing... Please try again in a moment');
+                throw new Error('Email service is initializing. Please try again in a few seconds.');
+            }
+
             throw new Error('Email service is not initialized. Check EMAIL_USER and EMAIL_PASS configuration.');
         }
 
@@ -244,5 +280,7 @@ const sendEmail = async (email, subject, html) => {
 
 module.exports = {
     sendEmail,
-    sendStaffCredentials
+    sendStaffCredentials,
+    initializeEmailService,
+    isEmailServiceReady: () => emailServiceReady
 };
