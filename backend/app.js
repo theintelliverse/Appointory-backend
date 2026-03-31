@@ -1,3 +1,7 @@
+// 🌐 Force IPv4 first to prevent ENETUNREACH errors in production
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http'); // 🔑 Required for WebSockets
