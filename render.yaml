@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: appointory-backend
-    runtime: node
-    buildCommand: npm --prefix backend install
-    startCommand: npm --prefix backend start
-    envVars:
-      - key: NODE_VERSION
-        value: "22"
