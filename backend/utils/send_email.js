@@ -17,10 +17,16 @@ const createTransporter = () => {
 
     return nodemailer.createTransport({
         service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false, // Use TLS, not SSL
         auth: {
             user: process.env.EMAIL_USER,
             pass: process.env.EMAIL_PASS,
         },
+        // Add connection timeout to prevent hanging
+        connectionTimeout: 10000,
+        socketTimeout: 10000,
     });
 };
 
@@ -30,6 +36,24 @@ let transporter = null;
 try {
     if (validateEmailConfig()) {
         transporter = createTransporter();
+
+        // ✅ Test the connection at startup
+        transporter.verify((error, success) => {
+            if (error) {
+                console.error('❌ EMAIL TRANSPORTER VERIFICATION FAILED:', error.message);
+                console.error('📝 Troubleshooting Steps:');
+                console.error('   1. Check your EMAIL_USER and EMAIL_PASS in .env file');
+                console.error('   2. If using Gmail with 2FA enabled:');
+                console.error('      - Generate an App Password at: https://myaccount.google.com/apppasswords');
+                console.error('      - Use the 16-character app password in EMAIL_PASS');
+                console.error('   3. If still having issues, check Gmail security settings:');
+                console.error('      - Allow "Less secure app access": https://www.google.com/accounts/DisplayUnlockCaptcha');
+                transporter = null; // Disable email service if verification fails
+            } else {
+                console.log('✅ EMAIL SERVICE INITIALIZED SUCCESSFULLY');
+                console.log(`   Verified with: ${process.env.EMAIL_USER}`);
+            }
+        });
     }
 } catch (error) {
     console.error('⚠️  EMAIL SERVICE INITIALIZATION WARNING:', error.message);
@@ -51,39 +75,49 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
         const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';
         const frontendUrl = frontendUrlList.replace(/\/$/, '');
 
+        // Theme Colors (from Tailwind theme)
+        const THEME = {
+            parchment: '#EEF6FA',    // Light background
+            teak: '#0F766E',         // Dark primary
+            khaki: '#3FA28C',        // Secondary accent
+            marigold: '#1F6FB2',     // Primary CTA (was orange)
+            saffron: '#1A4F8A',      // Dark accent
+            sandstone: '#AFC4D8',    // Borders & secondary text
+        };
+
         const mailOptions = {
             from: `"Appointory Support" <${process.env.EMAIL_USER}>`,
             to: email,
             subject: `🎉 Welcome to ${clinicName} - Your Staff Account is Ready`,
             html: `
-                <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="font-family: 'Montserrat', 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
                     <!-- Header Banner -->
-                    <div style="background: linear-gradient(135deg, #422D0B 0%, #563D1A 100%); padding: 30px 20px; text-align: center; border-radius: 12px 12px 0 0;">
-                        <h1 style="color: #FFA800; margin: 0; font-size: 28px;">🎉 Welcome, Dr. ${name}!</h1>
+                    <div style="background: linear-gradient(135deg, ${THEME.teak} 0%, ${THEME.saffron} 100%); padding: 30px 20px; text-align: center; border-radius: 12px 12px 0 0;">
+                        <h1 style="font-family: 'Asimovian', 'Montserrat', sans-serif; color: ${THEME.marigold}; margin: 0; font-size: 28px;">🎉 Welcome, Dr. ${name}!</h1>
                     </div>
 
                     <!-- Main Content -->
-                    <div style="background-color: #FFFBF5; padding: 30px 20px; border: 1px solid #E8DDCB; border-top: none;">
+                    <div style="background-color: ${THEME.parchment}; padding: 30px 20px; border: 1px solid ${THEME.sandstone}; border-top: none;">
                         
                         <!-- Welcome Message -->
-                        <p style="color: #555; font-size: 15px; line-height: 1.6; margin: 0 0 20px 0;">
-                            You have been successfully registered as a <strong style="color: #FFA800;">${role}</strong> at <strong>${clinicName}</strong>.
+                        <p style="color: #333; font-size: 15px; line-height: 1.6; margin: 0 0 20px 0;">
+                            You have been successfully registered as a <strong style="color: ${THEME.marigold};">${role}</strong> at <strong>${clinicName}</strong>.
                         </p>
 
                         <!-- Credentials Box -->
-                        <div style="background: linear-gradient(135deg, #FFA80010 0%, #E8DDCB10 100%); border: 2px solid #E8DDCB; border-left: 4px solid #FFA800; border-radius: 8px; padding: 20px; margin: 25px 0;">
-                            <p style="color: #422D0B; font-weight: bold; margin: 0 0 15px 0; font-size: 14px;">📋 Your Login Credentials</p>
+                        <div style="background: linear-gradient(135deg, ${THEME.marigold}12 0%, ${THEME.sandstone}18 100%); border: 2px solid ${THEME.sandstone}; border-left: 4px solid ${THEME.marigold}; border-radius: 8px; padding: 20px; margin: 25px 0;">
+                            <p style="color: ${THEME.teak}; font-weight: bold; margin: 0 0 15px 0; font-size: 14px;">📋 Your Login Credentials</p>
                             
                             <div style="background-color: white; padding: 12px; border-radius: 6px; margin-bottom: 12px;">
-                                <p style="color: #666; font-size: 12px; margin: 0 0 4px 0;">Email Address:</p>
-                                <p style="color: #422D0B; font-weight: bold; font-size: 14px; margin: 0; word-break: break-all;">
+                                <p style="color: ${THEME.sandstone}; font-size: 12px; margin: 0 0 4px 0;">Email Address:</p>
+                                <p style="color: ${THEME.teak}; font-weight: bold; font-size: 14px; margin: 0; word-break: break-all;">
                                     ${email}
                                 </p>
                             </div>
 
                             <div style="background-color: white; padding: 12px; border-radius: 6px;">
-                                <p style="color: #666; font-size: 12px; margin: 0 0 4px 0;">Temporary Password:</p>
-                                <p style="color: #422D0B; font-weight: bold; font-size: 14px; margin: 0; font-family: 'Courier New', monospace; letter-spacing: 1px;">
+                                <p style="color: ${THEME.sandstone}; font-size: 12px; margin: 0 0 4px 0;">Temporary Password:</p>
+                                <p style="color: ${THEME.teak}; font-weight: bold; font-size: 14px; margin: 0; font-family: 'Courier New', monospace; letter-spacing: 1px;">
                                     ${password}
                                 </p>
                             </div>
@@ -92,22 +126,22 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
                         <!-- Login Button -->
                         <div style="text-align: center; margin: 25px 0;">
                             <a href="${frontendUrl}/login" 
-                               style="background-color: #FFA800; color: white; padding: 14px 35px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 12px rgba(255, 168, 0, 0.3); transition: all 0.3s ease;">
+                               style="background-color: ${THEME.marigold}; color: white; padding: 14px 35px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 12px rgba(31, 111, 178, 0.3); transition: all 0.3s ease;">
                                Login to Your Dashboard
                             </a>
                         </div>
 
                         <!-- Security Instructions -->
-                        <div style="background-color: #FFE8B3; border: 1px solid #FFD580; border-radius: 6px; padding: 12px 15px; margin: 20px 0;">
-                            <p style="color: #9C6D00; font-size: 13px; margin: 0; line-height: 1.5;">
+                        <div style="background-color: ${THEME.parchment}; border: 2px solid ${THEME.khaki}; border-radius: 6px; padding: 12px 15px; margin: 20px 0;">
+                            <p style="color: ${THEME.khaki}; font-size: 13px; margin: 0; line-height: 1.5;">
                                 <strong>🔒 First Steps:</strong> After logging in, please change your password immediately from the user settings for security.
                             </p>
                         </div>
 
                         <!-- Important Notes -->
-                        <div style="background-color: #F0F0F0; border-radius: 6px; padding: 15px; margin: 20px 0;">
-                            <p style="color: #666; font-size: 13px; margin: 0 0 10px 0;"><strong>📌 Important Information:</strong></p>
-                            <ul style="color: #555; font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
+                        <div style="background-color: rgba(31, 111, 178, 0.05); border-radius: 6px; padding: 15px; margin: 20px 0; border-left: 4px solid ${THEME.marigold};">
+                            <p style="color: ${THEME.teak}; font-size: 13px; margin: 0 0 10px 0; font-weight: bold;">📌 Important Information:</p>
+                            <ul style="color: #333; font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
                                 <li>Keep your credentials confidential</li>
                                 <li>Change your password after first login</li>
                                 <li>Contact your clinic admin if you have issues</li>
@@ -116,9 +150,9 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
                         </div>
 
                         <!-- What's Next -->
-                        <div style="background-color: #F5F5F5; border-radius: 6px; padding: 15px; margin: 20px 0;">
-                            <p style="color: #422D0B; font-size: 13px; font-weight: bold; margin: 0 0 10px 0;">🚀 What's Next?</p>
-                            <ol style="color: #555; font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
+                        <div style="background-color: rgba(31, 111, 178, 0.05); border-radius: 6px; padding: 15px; margin: 20px 0; border-left: 4px solid ${THEME.khaki};">
+                            <p style="color: ${THEME.teak}; font-size: 13px; font-weight: bold; margin: 0 0 10px 0;">🚀 What's Next?</p>
+                            <ol style="color: #333; font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
                                 <li>Log in with your credentials above</li>
                                 <li>Complete your profile setup</li>
                                 <li>Update security settings</li>
@@ -129,11 +163,11 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
                     </div>
 
                     <!-- Footer -->
-                    <div style="background-color: #422D0B; color: #FFA800; padding: 20px; text-align: center; border-radius: 0 0 12px 12px; font-size: 12px;">
+                    <div style="background: linear-gradient(135deg, ${THEME.teak} 0%, ${THEME.saffron} 100%); color: ${THEME.parchment}; padding: 20px; text-align: center; border-radius: 0 0 12px 12px; font-size: 12px;">
                         <p style="margin: 0 0 5px 0;">
                             <strong>SwasthyaMitra</strong> - Healthcare Management System
                         </p>
-                        <p style="margin: 0; color: #C9A877;">
+                        <p style="margin: 0; color: ${THEME.sandstone};">
                             Clinic: ${clinicName}
                         </p>
                     </div>
@@ -172,6 +206,9 @@ const sendEmail = async (email, subject, html) => {
 
         // Check if transporter is initialized
         if (!transporter) {
+            console.error('❌ Email service is not initialized');
+            console.error(`   EMAIL_USER configured: ${!!process.env.EMAIL_USER}`);
+            console.error(`   EMAIL_PASS configured: ${!!process.env.EMAIL_PASS}`);
             throw new Error('Email service is not initialized. Check EMAIL_USER and EMAIL_PASS configuration.');
         }
 
@@ -182,10 +219,25 @@ const sendEmail = async (email, subject, html) => {
             html: html
         };
 
+        console.log(`📧 Attempting to send email to: ${email}`);
+        console.log(`   Subject: ${subject}`);
+
         await transporter.sendMail(mailOptions);
         console.log(`✅ Email sent successfully to ${email} - Subject: ${subject}`);
     } catch (error) {
         console.error(`❌ Error sending email to ${email}:`, error.message);
+        console.error(`   Error Code: ${error.code}`);
+        console.error(`   Error Response: ${error.response}`);
+
+        // Log specific Gmail error codes
+        if (error.code === 'EAUTH') {
+            console.error('⚠️  AUTHENTICATION ERROR: Gmail credentials are invalid or expired');
+            console.error('   Solution: Generate a new Gmail App Password at https://myaccount.google.com/apppasswords');
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'EHOSTUNREACH') {
+            console.error('⚠️  CONNECTION ERROR: Unable to connect to Gmail SMTP server');
+            console.error('   Solution: Check your internet connection and firewall settings');
+        }
+
         throw new Error(`Failed to send email: ${error.message}`);
     }
 };
