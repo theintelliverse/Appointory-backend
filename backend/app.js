@@ -5,8 +5,13 @@ const { Server } = require('socket.io'); // 🔑 Required for WebSockets
 require('dotenv').config();
 
 // ✅ Import email service (initializes automatically on module load)
-console.log('📧 Initializing email service...');
-require('./utils/send_email');
+const { initializeEmailService } = require('./utils/send_email');
+
+// Initialize email service in the background
+initializeEmailService().catch(error => {
+    console.warn('⚠️  Email service initialization failed:', error.message);
+    // Continue running - email errors won't crash the server
+});
 
 const authRoutes = require('./routes/auth_routes');
 const staffRoutes = require('./routes/staff_routes');
