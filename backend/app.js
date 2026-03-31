@@ -4,8 +4,9 @@ const http = require('http'); // 🔑 Required for WebSockets
 const { Server } = require('socket.io'); // 🔑 Required for WebSockets
 require('dotenv').config();
 
-// ✅ Import and initialize email service as soon as possible
-const { initializeEmailService } = require('./utils/send_email');
+// ✅ Import email service (initializes automatically on module load)
+console.log('📧 Initializing email service...');
+require('./utils/send_email');
 
 const authRoutes = require('./routes/auth_routes');
 const staffRoutes = require('./routes/staff_routes');
@@ -18,12 +19,6 @@ const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const isProduction = process.env.NODE_ENV === 'production';
 let server = null;
 let io = null;
-
-// 🔧 Initialize email service immediately after loading environment
-console.log('📧 Initializing email service...');
-initializeEmailService().catch(err => {
-    console.error('⚠️  Warning: Email service initialization failed during startup. You may not be able to send emails.');
-});
 
 const normalizeOrigin = (origin) => {
     if (!origin || typeof origin !== 'string') {
