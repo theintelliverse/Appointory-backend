@@ -190,6 +190,7 @@ const sendEmail = async (email, subject, html) => {
     }
 };
 
-module.exports = sendEmail;
-module.exports.sendStaffCredentials = sendStaffCredentials;
-module.exports.sendEmail = sendEmail;
+module.exports = {
+    sendEmail,
+    sendStaffCredentials
+};
