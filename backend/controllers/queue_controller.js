@@ -255,7 +255,7 @@ exports.completeVisit = async (req, res) => {
 
         // � Send Simple SMS Notification (Consultation Completed)
         const doctorName = queueEntry.doctorId?.name || 'Doctor';
-        const completionMessage = `Consultation with Dr. ${doctorName} completed. Your records saved. View anytime in Health Locker. - SwasthyaMitra`;
+        const completionMessage = `Consultation with Dr. ${doctorName} completed. Your records saved. View anytime in Health Locker. - Appointory`; // Updated branding in message
 
         try {
             if (!queueEntry.patientPhone) {
