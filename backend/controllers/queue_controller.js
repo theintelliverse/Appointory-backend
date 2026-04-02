@@ -107,7 +107,7 @@ exports.approvePatient = async (req, res) => {
         }, { new: true }).populate('clinicId', 'name');
 
         // 📱 Send Simple SMS Notification (OTP-style)
-        const simpleMessage = `Appointment Confirmed! Token: ${tokenNumber} | Clinic: ${entry.clinicId.name} | Arrive 10 mins early. - SwasthyaMitra`;
+        const simpleMessage = `Appointment Confirmed! Token: ${tokenNumber} | Clinic: ${entry.clinicId.name} | Arrive 10 mins early. - Appointory`;
 
         try {
             if (!entry.patientPhone) {
@@ -118,10 +118,10 @@ exports.approvePatient = async (req, res) => {
                 console.error("❌ SMS Error - Missing TWILIO_PHONE_NUMBER env var");
                 return;
             }
-            
+
             const cleanPhone = entry.patientPhone.replace(/\D/g, '').slice(-10);
             const formattedPhone = `+91${cleanPhone}`;
-            
+
             const smsResult = await client.messages.create({
                 body: simpleMessage,
                 from: process.env.TWILIO_PHONE_NUMBER,
@@ -151,7 +151,7 @@ exports.startConsultation = async (req, res) => {
 
         // � Send Simple SMS Notification (Consultation Starting)
         const doctorName = entry.doctorId?.name || 'Doctor';
-        const simpleMessage = `Your appointment is starting with Dr. ${doctorName}. Please go to the consultation room. - SwasthyaMitra`;
+        const simpleMessage = `Your appointment is starting with Dr. ${doctorName}. Please go to the consultation room. - Appointory`;
 
         try {
             if (!entry.patientPhone) {
@@ -162,10 +162,10 @@ exports.startConsultation = async (req, res) => {
                 console.error("❌ SMS Error - Missing TWILIO_PHONE_NUMBER env var");
                 return;
             }
-            
+
             const cleanPhone = entry.patientPhone.replace(/\D/g, '').slice(-10);
             const formattedPhone = `+91${cleanPhone}`;
-            
+
             const smsResult = await client.messages.create({
                 body: simpleMessage,
                 from: process.env.TWILIO_PHONE_NUMBER,
@@ -255,7 +255,7 @@ exports.completeVisit = async (req, res) => {
 
         // � Send Simple SMS Notification (Consultation Completed)
         const doctorName = queueEntry.doctorId?.name || 'Doctor';
-        const completionMessage = `Consultation with Dr. ${doctorName} completed. Your records saved. View anytime in Health Locker. - Appointory`; // Updated branding in message
+        const completionMessage = `Consultation with Dr. ${doctorName} completed. Your records saved. View anytime in Health Locker. - Appointory`;
 
         try {
             if (!queueEntry.patientPhone) {
@@ -266,10 +266,10 @@ exports.completeVisit = async (req, res) => {
                 console.error("❌ SMS Error - Missing TWILIO_PHONE_NUMBER env var");
                 return;
             }
-            
+
             const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
             const formattedPhone = `+91${cleanPhone}`;
-            
+
             const smsResult = await client.messages.create({
                 body: completionMessage,
                 from: process.env.TWILIO_PHONE_NUMBER,
@@ -298,10 +298,10 @@ exports.getLiveQueue = async (req, res) => {
         // Filter to show only today's appointments
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        
+
         const queue = await Queue.find({
             clinicId: req.user.clinicId,
             isApproved: true,
@@ -325,7 +325,7 @@ exports.getDoctorQueue = async (req, res) => {
         // Filter to show only today's appointments
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         const doctorId = req.user.id || req.user._id;
         const myQueue = await Queue.find({
             clinicId: req.user.clinicId,
@@ -345,7 +345,7 @@ exports.getConfirmedAppointments = async (req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         const appointments = await Queue.find({
             clinicId: req.user.clinicId,
             visitType: 'Appointment',
@@ -353,9 +353,9 @@ exports.getConfirmedAppointments = async (req, res) => {
             status: { $in: ['Waiting', 'In-Consultation', 'Completed'] },
             appointmentDate: { $gte: today } // Show only approved appointments from today onwards
         }).sort({ appointmentDate: 1, createdAt: 1 })
-          .populate('doctorId', 'name specialization')
-          .populate('clinicId', 'name');
-        
+            .populate('doctorId', 'name specialization')
+            .populate('clinicId', 'name');
+
         res.status(200).json({ success: true, data: appointments });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -367,19 +367,19 @@ exports.getNext7DaysAppointments = async (req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         const next7days = new Date(today);
         next7days.setDate(next7days.getDate() + 7);
-        
+
         const appointments = await Queue.find({
             clinicId: req.user.clinicId,
             visitType: 'Appointment',
             isApproved: true,
             appointmentDate: { $gte: today, $lt: next7days }
         }).sort({ appointmentDate: 1, createdAt: 1 })
-          .populate('doctorId', 'name specialization')
-          .populate('clinicId', 'name');
-        
+            .populate('doctorId', 'name specialization')
+            .populate('clinicId', 'name');
+
         res.status(200).json({ success: true, data: appointments });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -391,10 +391,10 @@ exports.getDoctorScheduledAppointments = async (req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         const next7days = new Date(today);
         next7days.setDate(next7days.getDate() + 7);
-        
+
         const doctorId = req.user.id || req.user._id;
         const appointments = await Queue.find({
             clinicId: req.user.clinicId,
@@ -403,8 +403,8 @@ exports.getDoctorScheduledAppointments = async (req, res) => {
             isApproved: true,
             appointmentDate: { $gte: today, $lt: next7days }
         }).sort({ appointmentDate: 1, createdAt: 1 })
-          .populate('clinicId', 'name');
-        
+            .populate('clinicId', 'name');
+
         res.status(200).json({ success: true, data: appointments });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

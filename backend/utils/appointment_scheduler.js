@@ -26,7 +26,7 @@ async function scheduleAppointmentReminders(queueId, patientPhone, estimatedDura
     try {
         // Current time when appointment starts
         const appointmentStartTime = new Date();
-        
+
         // When appointment will end (estimated)
         const appointmentEndTime = new Date(appointmentStartTime.getTime() + estimatedDurationMinutes * 60000);
 
@@ -38,20 +38,20 @@ async function scheduleAppointmentReminders(queueId, patientPhone, estimatedDura
 
         // Only schedule if times are in the future
         const now = new Date();
-        
+
         // 15-minute reminder
         if (reminder15MinTime > now) {
             const jobId15 = `reminder_15_${queueId}`;
-            
+
             const job15 = schedule.scheduleJob(jobId15, reminder15MinTime, async () => {
                 try {
-                    const message15 = `⏰ Reminder: Your consultation with Dr. ${doctorName} is ending soon! Please wrap up in about 15 minutes. Thank you! - SwasthyaMitra`;
-                    
+                    const message15 = `⏰ Reminder: Your consultation with Dr. ${doctorName} is ending soon! Please wrap up in about 15 minutes. Thank you! - Appointory`;
+
                     // Send SMS instead of WhatsApp
                     if (patientPhone) {
                         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
                         const formattedPhone = `+91${cleanPhone}`;
-                        
+
                         try {
                             await client.messages.create({
                                 body: message15,
@@ -75,16 +75,16 @@ async function scheduleAppointmentReminders(queueId, patientPhone, estimatedDura
         // 5-minute reminder
         if (reminder5MinTime > now) {
             const jobId5 = `reminder_5_${queueId}`;
-            
+
             const job5 = schedule.scheduleJob(jobId5, reminder5MinTime, async () => {
                 try {
-                    const message5 = `⏰ Final Reminder: Your appointment is ending in 5 minutes! Please conclude the consultation. Thank you! - SwasthyaMitra`;
-                    
+                    const message5 = `⏰ Final Reminder: Your appointment is ending in 5 minutes! Please conclude the consultation. Thank you! - Appointory`;
+
                     // Send SMS instead of WhatsApp
                     if (patientPhone) {
                         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
                         const formattedPhone = `+91${cleanPhone}`;
-                        
+
                         try {
                             await client.messages.create({
                                 body: message5,
@@ -158,7 +158,7 @@ function getReminderStatus(queueId = null) {
     if (queueId) {
         const jobId15 = `reminder_15_${queueId}`;
         const jobId5 = `reminder_5_${queueId}`;
-        
+
         return {
             reminder15min: scheduledReminders.has(jobId15),
             reminder5min: scheduledReminders.has(jobId5)

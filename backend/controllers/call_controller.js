@@ -68,7 +68,7 @@ exports.initiateCall = async (req, res) => {
         console.log(`📞 Call initiated from Dr. ${doctor.name} to ${cleanPhone} | Call ID: ${callRequest._id}`);
 
         // ✅ Send Initial SMS Message
-        const initialMessage = `Hi ${patient.name || 'there'}! Dr. ${doctor.name} is calling you for your appointment at ${clinic.name}. Please reply "Yes" to confirm. We will remind you if you don't respond. - SwasthyaMitra`;
+        const initialMessage = `Hi ${patient.name || 'there'}! Dr. ${doctor.name} is calling you for your appointment at ${clinic.name}. Please reply "Yes" to confirm. We will remind you if you don't respond. - Appointory`;
 
         try {
             const formattedPhone = `+91${cleanPhone}`;
@@ -180,7 +180,7 @@ const scheduleReminders = async (callRequest, doctor, clinic, patient) => {
  */
 const sendReminder = async (callRequest, doctor, clinic, patient, minutesAfter) => {
     try {
-        const reminderMessage = `Reminder: Dr. ${doctor.name} is still waiting for you at ${clinic.name}! Please reply "Yes" to confirm you're joining the consultation. - SwasthyaMitra`;
+        const reminderMessage = `Reminder: Dr. ${doctor.name} is still waiting for you at ${clinic.name}! Please reply "Yes" to confirm you're joining the consultation. - Appointory`;
 
         try {
             const formattedPhone = `+91${callRequest.patientPhone}`;

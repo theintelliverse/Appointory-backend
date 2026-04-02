@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const protect = (req, res, next) => {
-    let token = req.headers.authorization;1
+    let token = req.headers.authorization;
 
     if (token && token.startsWith('Bearer')) {
         try {
@@ -39,7 +39,7 @@ const protectPatient = async (req, res, next) => {
     try {
         // 🚨 FIXED: Now uses the same secret as the protect function
         const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded; 
+        req.user = decoded;
         next();
     } catch (err) {
         console.error("JWT Verification Error:", err.message);
@@ -47,4 +47,4 @@ const protectPatient = async (req, res, next) => {
     }
 };
 
-module.exports = { protect, authorize , protectPatient };
+module.exports = { protect, authorize, protectPatient };

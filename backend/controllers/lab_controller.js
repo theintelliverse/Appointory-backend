@@ -5,13 +5,14 @@ exports.uploadLabReport = async (req, res) => {
     console.log("🚀 [1] Controller Started: Upload request received.");
     try {
         const { patientPhone, queueId } = req.params;
-        
+
         // 🔍 DEBUG: Check File
         if (!req.file) {
             console.error("❌ [2] Error: req.file is missing.");
             return res.status(400).json({ success: false, message: "No file object found." });
         }
-        console.log("✅ [2] File Uploaded to Cloudinary:", req.file.path);
+        const cloudinarySecureUrl = req.file.secure_url || req.file.path || req.file.url;
+        console.log("✅ [2] File Uploaded to Cloudinary:", cloudinarySecureUrl);
 
         // 🔍 DEBUG: Check Queue Entry
         const queueEntry = await Queue.findById(queueId);
@@ -21,31 +22,46 @@ exports.uploadLabReport = async (req, res) => {
         }
         console.log("✅ [3] Queue Entry Found:", queueEntry.patientName);
 
-        // 🔍 DEBUG: Check Patient
+        // 🔍 DEBUG: Check Patient(s)
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
-        let patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        let patients = await Patient.find({ phone: new RegExp(cleanPhone + '$') });
 
-        if (!patient) {
-            console.log("👤 [4] Patient not found, creating new profile...");
-            patient = new Patient({
-                name: queueEntry.patientName,
-                phone: cleanPhone,
-                documents: []
+        // Fallback for inconsistent phone formats in DB
+        if (!patients || patients.length === 0) {
+            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
+                .select('name phone documents');
+            patients = allProfiles.filter((profile) => {
+                const normalized = String(profile.phone || '').replace(/\D/g, '').slice(-10);
+                return normalized === cleanPhone;
             });
         }
 
-        // 🗄️ Update Patient Documents
-        patient.documents.push({
-            visitId: queueId, 
+        if (!patients || patients.length === 0) {
+            console.log("👤 [4] Patient not found, creating new profile...");
+            patients = [new Patient({
+                name: queueEntry.patientName,
+                phone: cleanPhone,
+                documents: []
+            })];
+        }
+
+        // 🗄️ Update Patient Documents for all matched profiles
+        const newDocument = {
+            visitId: queueId,
             title: req.body.title || "Lab Report",
-            fileUrl: req.file.path, 
+            fileUrl: cloudinarySecureUrl,
+            publicId: req.file.public_id || req.file.filename || null,
             fileType: req.body.fileType || "Diagnostic",
             uploadedAt: Date.now()
-        });
+        };
 
-        console.log("💾 [5] Attempting to save patient profile...");
-        await patient.save();
-        console.log("✅ [5] Patient saved successfully.");
+        for (const patient of patients) {
+            patient.documents.push(newDocument);
+        }
+
+        console.log(`💾 [5] Attempting to save ${patients.length} patient profile(s)...`);
+        await Promise.all(patients.map((patient) => patient.save()));
+        console.log("✅ [5] Patient profile(s) saved successfully.");
 
         // 🏷️ Update Queue Stage
         queueEntry.currentStage = 'Lab-Completed';
@@ -64,16 +80,17 @@ exports.uploadLabReport = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Report published successfully.",
-            fileUrl: req.file.path
+            fileUrl: cloudinarySecureUrl,
+            matchedProfiles: patients.length
         });
 
     } catch (error) {
         console.error("💥 [FATAL ERROR]:", error);
         // Ensure we send a response even on crash
-        return res.status(500).json({ 
-            success: false, 
+        return res.status(500).json({
+            success: false,
             message: "Internal server error during upload.",
-            error: error.message 
+            error: error.message
         });
     }
 };

@@ -16,25 +16,54 @@ exports.getPatientProfile = async (req, res) => {
         // 🔍 THE FIX: Clean the phone number and use Regex
         // This extracts the last 10 digits to ignore country codes
         const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
-        const phoneRegex = new RegExp(cleanPhone + '$'); 
+        const phoneRegex = new RegExp(cleanPhone + '$');
 
         console.log("🔍 Searching for normalized phone pattern:", cleanPhone);
 
         // 🚀 PERFORM DUAL LOOKUP using Regex
-        const [lockerProfile, visitHistory] = await Promise.all([
-            Patient.findOne({ phone: phoneRegex }),
+        const [regexMatchedProfiles, regexMatchedVisits] = await Promise.all([
+            Patient.find({ phone: phoneRegex }).sort({ updatedAt: -1 }),
             MedicalRecord.find({ patientPhone: phoneRegex })
                 .populate('clinicId', 'name address')
                 .populate('doctorId', 'name specialization')
                 .sort({ visitDate: -1 })
         ]);
 
+        // Fallback for mixed formatting: normalize digits and match by last 10.
+        let lockerProfiles = regexMatchedProfiles;
+        if (!lockerProfiles || lockerProfiles.length === 0) {
+            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
+                .select('name phone age gender bloodGroup documents vitals updatedAt')
+                .sort({ updatedAt: -1 });
+
+            lockerProfiles = allProfiles.filter((profile) => {
+                const normalized = String(profile.phone || '').replace(/\D/g, '').slice(-10);
+                return normalized === cleanPhone;
+            });
+        }
+
+        const lockerProfile = lockerProfiles?.[0] || null;
+
+        // Fallback for mixed formatting in MedicalRecord.patientPhone
+        let visitHistory = regexMatchedVisits;
+        if (!visitHistory || visitHistory.length === 0) {
+            const allVisits = await MedicalRecord.find({ patientPhone: { $exists: true, $ne: null } })
+                .populate('clinicId', 'name address')
+                .populate('doctorId', 'name specialization')
+                .sort({ visitDate: -1 });
+
+            visitHistory = allVisits.filter((visit) => {
+                const normalized = String(visit.patientPhone || '').replace(/\D/g, '').slice(-10);
+                return normalized === cleanPhone;
+            });
+        }
+
         // Logic check: Allow either to exist
         if (!lockerProfile && (!visitHistory || visitHistory.length === 0)) {
             console.warn(`❌ No data found in either collection for: ${cleanPhone}`);
-            return res.status(404).json({ 
-                success: false, 
-                message: "No health records found for this number." 
+            return res.status(404).json({
+                success: false,
+                message: "No health records found for this number."
             });
         }
 
@@ -54,11 +83,21 @@ exports.getPatientProfile = async (req, res) => {
             };
         });
 
-        // 🧩 Merge documents from Patient model
-        const documents = lockerProfile?.documents || [];
+        // 🧩 Merge documents from all matching patient profiles and dedupe
+        const mergedDocuments = (lockerProfiles || []).flatMap((p) => p.documents || []);
+        const toDocKey = (doc) => {
+            if (doc?._id) return `id:${doc._id.toString()}`;
+            if (doc?.publicId) return `public:${doc.publicId}`;
+            return `url:${doc?.fileUrl || ''}`;
+        };
+        const documents = Array.from(
+            new Map(mergedDocuments.map((doc) => [toDocKey(doc), doc])).values()
+        ).sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
 
-        // 🧩 Get vitals from Patient model (sorted by latest first)
-        const vitals = lockerProfile?.vitals ? [...lockerProfile.vitals].reverse() : [];
+        // 🧩 Merge vitals from all matching patient profiles (latest first)
+        const vitals = (lockerProfiles || [])
+            .flatMap((p) => p.vitals || [])
+            .sort((a, b) => new Date(b.recordedAt || 0) - new Date(a.recordedAt || 0));
 
         const responseData = {
             name: lockerProfile?.name || visitHistory[0]?.patientName || "Valued Patient",
@@ -72,11 +111,11 @@ exports.getPatientProfile = async (req, res) => {
             lastUpdated: Date.now()
         };
 
-        console.log(`✅ Success: Documents count: ${documents.length}, Vitals count: ${vitals.length}`);
+        console.log(`✅ Success: Matched profiles: ${lockerProfiles.length}, Documents: ${documents.length}, Vitals: ${vitals.length}`);
 
-        res.status(200).json({ 
-            success: true, 
-            data: responseData 
+        res.status(200).json({
+            success: true,
+            data: responseData
         });
 
     } catch (error) {
