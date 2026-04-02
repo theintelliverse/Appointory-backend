@@ -187,7 +187,7 @@ app.use('/api/call', callRoutes);
 
 // Health Check
 app.get('/', (req, res) => {
-    res.send('Swasthya-Mitra Backend is running...');
+    res.send('Appointory Backend is running...');
 });
 
 app.get('/api/health', (req, res) => {
