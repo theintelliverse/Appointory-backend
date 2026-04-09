@@ -3,6 +3,10 @@ const Clinic = require('../models/Clinic');
 const MedicalRecord = require('../models/MedicalRecord');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
+const {
+    estimateWaitTimeFromDb,
+    updatePredictorWithData
+} = require('../AI_model/appointment_predictor');
 const twilio = require('twilio');
 const client = new twilio(
     process.env.TWILIO_ACCOUNT_SID,
@@ -253,6 +257,16 @@ exports.completeVisit = async (req, res) => {
             visitDate: Date.now()
         });
 
+        updatePredictorWithData({
+            clinicId: queueEntry.clinicId,
+            doctorId: queueEntry.doctorId?._id || queueEntry.doctorId,
+            visit_type: queueEntry.visitType,
+            emergency: queueEntry.isEmergency,
+            time: queueEntry.startTime || queueEntry.appointmentDate || queueEntry.createdAt,
+            problem: diagnosis || notes || queueEntry.reason,
+            duration
+        });
+
         // � Send Simple SMS Notification (Consultation Completed)
         const doctorName = queueEntry.doctorId?.name || 'Doctor';
         const completionMessage = `Consultation with Dr. ${doctorName} completed. Your records saved. View anytime in Health Locker. - Appointory`;
@@ -425,11 +439,23 @@ exports.getPatientStatus = async (req, res) => {
             return res.status(200).json({ success: true, isPendingApproval: true });
         }
 
+        const doctorObjectId = entry.doctorId?._id || entry.doctorId;
+
         const peopleAhead = await Queue.countDocuments({
-            doctorId: entry.doctorId._id,
+            doctorId: doctorObjectId,
             status: 'Waiting',
             isApproved: true,
             createdAt: { $lt: entry.createdAt }
+        });
+
+        const estimatedWait = await estimateWaitTimeFromDb({
+            clinicId: entry.clinicId,
+            doctorId: doctorObjectId,
+            visitType: entry.visitType,
+            problem: entry.reason || entry.diagnosis || entry.consultationNotes,
+            isEmergency: !!entry.isEmergency,
+            tokenNumber: entry.tokenNumber,
+            peopleAhead
         });
 
         res.status(200).json({
@@ -439,8 +465,8 @@ exports.getPatientStatus = async (req, res) => {
                 tokenNumber: entry.tokenNumber,
                 status: entry.status,
                 peopleAhead,
-                estimatedWait: (peopleAhead * 12),
-                isDoctorOnBreak: !entry.doctorId.isAvailable
+                estimatedWait,
+                isDoctorOnBreak: !(entry.doctorId && entry.doctorId.isAvailable)
             }
         });
     } catch (error) {
