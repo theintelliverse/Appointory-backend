@@ -7,6 +7,16 @@ const cors = require('cors');
 const http = require('http'); // 🔑 Required for WebSockets
 const { Server } = require('socket.io'); // 🔑 Required for WebSockets
 require('dotenv').config();
+const {
+    securityHeaders,
+    globalApiLimiter,
+    authLimiter,
+    otpSendLimiter,
+    otpVerifyLimiter,
+    passwordResetLimiter,
+    publicReadLimiter,
+    publicWriteLimiter
+} = require('./utils/security_middleware');
 
 // ✅ Import email service (initializes automatically on module load)
 const { initializeEmailService } = require('./utils/send_email');
@@ -60,9 +70,12 @@ const parseAllowedOrigins = (value) => {
 
 const allowedOrigins = new Set([
     ...parseAllowedOrigins(process.env.CORS_ORIGINS),
-    ...parseAllowedOrigins(process.env.FRONTEND_URL),
-    normalizeOrigin('http://localhost:5173')
+    ...parseAllowedOrigins(process.env.FRONTEND_URL)
 ]);
+
+if (!isProduction) {
+    allowedOrigins.add(normalizeOrigin('http://localhost:5173'));
+}
 
 const vercelProjectPrefixes = new Set();
 for (const configuredOrigin of allowedOrigins) {
@@ -168,8 +181,38 @@ if (!isVercel) {
 
 // Middlewares
 app.set('trust proxy', 1);
+app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
+app.use('/api', globalApiLimiter);
+
+// Auth/staff login hard limits
+app.use('/api/auth/register-clinic', authLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/patient/login-with-password', authLimiter);
+app.use('/api/auth/patient/register', authLimiter);
+app.use('/api/auth/patient/register-with-otp-password', authLimiter);
+
+// OTP abuse protection
+app.use('/api/auth/patient/send-otp', otpSendLimiter);
+app.use('/api/auth/patient/verify-otp', otpVerifyLimiter);
+app.use('/api/auth/patient/verify-locker', otpVerifyLimiter);
+app.use('/api/auth/patient/change-password-with-otp', otpVerifyLimiter);
+
+// Password reset abuse protection
+app.use('/api/auth/forgot-password', passwordResetLimiter);
+app.use('/api/auth/reset-password', passwordResetLimiter);
+app.use('/api/auth/patient/forgot-password', passwordResetLimiter);
+app.use('/api/auth/patient/reset-password', passwordResetLimiter);
+
+// Public endpoint rate limits
+app.use('/api/queue/public/status', publicReadLimiter);
+app.use('/api/auth/queue/public/status', publicReadLimiter);
+app.use('/api/queue/public/doctor-display', publicReadLimiter);
+app.use('/api/staff/public/doctors', publicReadLimiter);
+app.use('/api/queue/public/checkin', publicWriteLimiter);
+app.use('/api/queue/public/cancel', publicWriteLimiter);
+app.use('/api/auth/patient/request-checkin', publicWriteLimiter);
 
 // 📢 Inject Socket.io into every request
 // This allows you to use req.io.to(clinicId).emit() in your controllers
@@ -202,7 +245,7 @@ app.get('/api/health', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-if (!isVercel) {
+if (!isVercel && require.main === module) {
     // 🔑 IMPORTANT: Listen using 'server', not 'app'
     server.listen(PORT, () => {
         if (!isProduction) {
