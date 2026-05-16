@@ -20,7 +20,10 @@ const {
     getPendingRequests,
     approvePatient,
     getPublicDoctorQueue,
-    updateVitals
+    updateVitals,
+    createTestRequest,
+    updateQueueStage,
+    getDoctorDashboardStats
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -58,6 +61,8 @@ router.get('/live', authorize('receptionist', 'doctor', 'admin', 'lab'), getLive
 router.get('/my-queue', authorize('doctor'), getDoctorQueue);
 // 📅 Doctor: My scheduled appointments next 7 days
 router.get('/my-scheduled', authorize('doctor'), getDoctorScheduledAppointments);
+// 📊 Doctor: Dashboard Stats
+router.get('/stats/doctor', authorize('doctor'), getDoctorDashboardStats);
 // 📅 Confirmed appointments menu
 router.get('/confirmed', authorize('receptionist', 'doctor', 'admin'), getConfirmedAppointments);
 // 📅 Next 7 days appointments
@@ -73,6 +78,10 @@ router.post('/update-vitals/:queueId', authorize('doctor'), updateVitals);
 // 🔬 Lab Referral Routes
 router.patch('/refer/lab/:queueId', authorize('receptionist', 'doctor'), referToLab);
 router.patch('/lab/complete/:queueId', authorize('lab', 'admin'), completeLabTask);
+
+// 🆕 LAB QUICK ACTIONS
+router.post('/create', authorize('lab', 'admin', 'receptionist'), createTestRequest);
+router.put('/:id', authorize('lab', 'admin'), updateQueueStage);
 
 // Medical History
 router.get('/history', authorize('admin', 'doctor'), getMedicalHistory);

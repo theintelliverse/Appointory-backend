@@ -1,5 +1,7 @@
 const MedicalRecord = require('../models/MedicalRecord');
-const { Parser } = require('json2csv'); // Install with: npm install json2csv
+const StaffSession = require('../models/StaffSession');
+const User = require('../models/User');
+const { Parser } = require('json2csv');
 
 exports.downloadClinicReport = async (req, res) => {
     try {
@@ -46,27 +48,59 @@ exports.downloadClinicReport = async (req, res) => {
     }
 };
 
-const User = require('../models/User');
-
 exports.getClinicDataPreview = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;
+        const { startDate, endDate } = req.query;
 
-        // Fetch Medical History and Staff in parallel
-        const [medicalRecords, staffList] = await Promise.all([
-            MedicalRecord.find({ clinicId })
+        let medicalFilter = { clinicId };
+        let sessionFilter = { clinicId };
+
+        if (startDate && endDate) {
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            end.setHours(23, 59, 59, 999); // Include full end day
+
+            medicalFilter.visitDate = { $gte: start, $lte: end };
+            sessionFilter.loginTime = { $gte: start, $lte: end };
+        }
+
+        // Fetch Data in parallel
+        const [medicalRecords, staffList, sessions] = await Promise.all([
+            MedicalRecord.find(medicalFilter)
                 .populate('doctorId', 'name specialization')
                 .sort({ visitDate: -1 })
-                .limit(50), // Limit preview for performance
-            User.find({ clinicId, deletedAt: null })
+                .limit(startDate ? 1000 : 50), // Show more if filtered
+            User.find({ clinicId, isActive: { $ne: false } })
                 .select('-password')
-                .sort({ role: 1 })
+                .sort({ role: 1 }),
+            StaffSession.find(sessionFilter)
+                .populate('staffId', 'name role')
+                .sort({ loginTime: -1 })
+                .limit(startDate ? 1000 : 100)
+        ]);
+
+        // Calculate Average Working Time per Staff within range
+        let statsMatch = { clinicId, logoutTime: { $exists: true } };
+        if (startDate && endDate) {
+            statsMatch.loginTime = { $gte: new Date(startDate), $lte: new Date(endDate) };
+        }
+
+        const staffStats = await StaffSession.aggregate([
+            { $match: statsMatch },
+            { $group: { 
+                _id: "$staffId", 
+                avgMinutes: { $avg: "$sessionDurationMinutes" },
+                totalSessions: { $sum: 1 }
+            }}
         ]);
 
         res.status(200).json({
             success: true,
             medicalRecords,
-            staffList
+            staffList,
+            sessions,
+            staffStats
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
+const StaffSession = require('../models/StaffSession');
 const { generateToken, hashPassword, comparePassword } = require('../utils/auth_helper');
 const { sendEmail } = require('../utils/send_email');
 
@@ -58,10 +59,19 @@ exports.loginStaff = async (req, res) => {
 
         const token = generateToken(user);
 
+        // 🕒 Create Staff Session
+        const session = await StaffSession.create({
+            staffId: user._id,
+            clinicId: clinic._id,
+            loginTime: new Date()
+        });
+
         res.status(200).json({
             success: true,
             token,
+            sessionId: session._id,
             user: {
+                id: user._id,
                 name: user.name,
                 role: user.role,
                 clinicName: clinic.name,
@@ -419,5 +429,23 @@ exports.resetPassword = async (req, res) => {
             message: "An error occurred while resetting your password",
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
+    }
+};
+
+/**
+ * @desc    Staff Logout - Log the logout time
+ * @route   POST /api/auth/logout
+ */
+exports.logoutStaff = async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        if (sessionId) {
+            await StaffSession.findByIdAndUpdate(sessionId, {
+                logoutTime: new Date()
+            });
+        }
+        res.status(200).json({ success: true, message: "Logged out successfully" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };

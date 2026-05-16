@@ -21,27 +21,10 @@ let otpStore = {};
  */
 exports.sendOTP = async (req, res) => {
     try {
-        let { phone, isRegistration } = req.body;
-
-        // ✅ Validate phone input
-        if (!phone) {
-            return res.status(400).json({
-                success: false,
-                message: "Phone number is required"
-            });
-        }
-
+        const { phone, isRegistration } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
-        // ✅ Validate phone length
-        if (cleanPhone.length !== 10) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid phone number. Please enter a 10-digit number."
-            });
-        }
-
-        // ✅ CHECK FOR DUPLICATE REGISTRATION (If isRegistration flag is true)
+        // CHECK FOR DUPLICATE REGISTRATION
         if (isRegistration) {
             const existingPatient = await Patient.findOne({ phone: cleanPhone });
             if (existingPatient) {
@@ -55,56 +38,43 @@ exports.sendOTP = async (req, res) => {
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // ✅ Store with 5-minute expiry
+        // Store with 5-minute expiry
         otpStore[cleanPhone] = { otp, expires: Date.now() + 300000 };
-        console.log(`✅ OTP Generated for ${cleanPhone}: ${otp} (Expires in 5 min)`);
+        console.log(`✅ OTP Generated for ${cleanPhone}: ${otp}`);
 
         const formattedPhone = `+91${cleanPhone}`;
 
-        // --- 🚀 REAL SMS CODE ---
+        // REAL SMS CODE
         try {
-            // ✅ Check if Twilio credentials are configured
-            if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
-                throw new Error('Twilio credentials not configured');
-            }
-
-            const response = await client.messages.create({
-                body: `Your appointory OTP is: ${otp}. Valid for 5 minutes. Please do not share this with anyone.`,
+            await client.messages.create({
+                body: `Your appointory OTP is: ${otp}. Valid for 5 minutes.`,
                 from: process.env.TWILIO_PHONE_NUMBER,
                 to: formattedPhone
             });
 
-            console.log(`📱 SMS SENT successfully to ${formattedPhone} | SID: ${response.sid}`);
-
             res.status(200).json({
                 success: true,
-                message: "OTP sent successfully to your mobile. Please check your phone.",
+                message: "OTP sent successfully!",
                 debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
             });
 
         } catch (smsError) {
-            console.error(`❌ Twilio SMS Error: ${smsError.message}`);
-            // ✅ Show fallback OTP in development mode for testing
-            console.log(`📋 DEVELOPMENT FALLBACK OTP for ${cleanPhone}: ${otp}`);
-
+            console.error("Twilio SMS Error:", smsError.message);
             res.status(500).json({
                 success: false,
-                message: "Failed to send SMS. Please check the phone number and try again.",
+                message: "Failed to send SMS.",
                 debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
             });
         }
 
     } catch (error) {
-        console.error(`❌ Send OTP Error: ${error.message}`);
-        res.status(500).json({
-            success: false,
-            message: "Error sending OTP. Please try again later."
-        });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
+
 /**
- * 2️⃣ VERIFY OTP FOR CHECK-IN
+ * 2️⃣ VERIFY OTP FOR CHECK-IN (Consumes OTP)
  */
 exports.verifyOTPForCheckin = async (req, res) => {
     try {
@@ -121,6 +91,29 @@ exports.verifyOTPForCheckin = async (req, res) => {
         res.status(200).json({
             success: true,
             message: "Phone verified. You can now request check-in.",
+            phone: cleanPhone
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * 2.5️⃣ VALIDATE OTP ONLY (Does not consume OTP - for multi-step flows)
+ */
+exports.validateOTP = async (req, res) => {
+    try {
+        let { phone, otp } = req.body;
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const record = otpStore[cleanPhone];
+
+        if (!record || record.otp !== otp || record.expires < Date.now()) {
+            return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "OTP is valid.",
             phone: cleanPhone
         });
     } catch (error) {

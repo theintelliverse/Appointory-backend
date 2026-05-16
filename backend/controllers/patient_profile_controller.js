@@ -129,21 +129,41 @@ exports.getPatientProfile = async (req, res) => {
  */
 exports.updatePatientProfile = async (req, res) => {
     try {
-        const { name, dob, gender } = req.body;
-        const updatedPatient = await Patient.findByIdAndUpdate(
-            req.user.id,
-            { name, dob, gender },
-            { new: true }
-        );
+        const { name, age, gender, bloodGroup, bio } = req.body;
+        
+        // Find patient by ID or Phone (from token)
+        const patientId = req.user.id;
+        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = new RegExp(cleanPhone + '$');
 
-        // 📢 SOCKET UPDATE: If a doctor is currently viewing this patient's 
-        // QuickView, the doctor's screen can update instantly.
-        if (req.io && updatedPatient) {
-            // We emit to the specific patient ID room
-            req.io.to(updatedPatient._id.toString()).emit('patientProfileUpdated', updatedPatient);
+        let patient = await Patient.findById(patientId);
+        if (!patient) {
+            patient = await Patient.findOne({ phone: phoneRegex });
         }
 
-        res.status(200).json({ success: true, data: updatedPatient });
+        if (!patient) {
+            return res.status(404).json({ success: false, message: "Patient profile not found" });
+        }
+
+        // Update fields
+        if (name) patient.name = name;
+        if (age) patient.age = parseInt(age);
+        if (gender) patient.gender = gender;
+        if (bloodGroup) patient.bloodGroup = bloodGroup;
+        if (bio) patient.bio = bio;
+
+        await patient.save();
+
+        // 📢 SOCKET UPDATE: If a doctor is currently viewing this patient
+        if (req.io && patient) {
+            req.io.to(patient._id.toString()).emit('patientProfileUpdated', patient);
+        }
+
+        res.status(200).json({ 
+            success: true, 
+            message: "Profile updated successfully",
+            data: patient 
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

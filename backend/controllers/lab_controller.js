@@ -1,6 +1,107 @@
 const Queue = require('../models/Queue');
 const Patient = require('../models/Patient');
 
+// 🆕 GET LAB DASHBOARD STATISTICS
+exports.getLabDashboardStats = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const filterAll = req.query.filter === 'all';
+        
+        const query = { clinicId: clinicId };
+        
+        if (!filterAll) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            query.createdAt = { $gte: today, $lt: tomorrow };
+        }
+
+        console.log(`🔬 Lab stats query for clinicId: ${clinicId}, filterAll: ${filterAll}`);
+
+        const queueData = await Queue.find(query)
+            .select('patientName patientPhone currentStage requiredTest isEmergency createdAt tokenNumber _id')
+            .sort({ createdAt: -1 });
+
+        // Calculate statistics
+        const stats = {
+            totalRequests: queueData.length,
+            samplesCollected: queueData.filter(q => ['Lab-Pending', 'Lab-Completed'].includes(q.currentStage)).length,
+            inProcess: queueData.filter(q => q.currentStage === 'Lab-Pending').length,
+            completed: queueData.filter(q => q.currentStage === 'Lab-Completed').length,
+            pending: queueData.filter(q => q.currentStage === 'Waiting').length
+        };
+
+        res.status(200).json({
+            success: true,
+            data: {
+                stats,
+                queueData: queueData
+            }
+        });
+    } catch (error) {
+        console.error('❌ Lab stats error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// 🆕 GET RECENT LAB REPORTS
+exports.getRecentReports = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const filterAll = req.query.filter === 'all';
+        const limit = req.query.limit || 10;
+
+        const query = { 
+            clinicId: clinicId,
+            currentStage: 'Lab-Completed'
+        };
+
+        if (!filterAll) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            query.updatedAt = { $gte: today, $lt: tomorrow };
+        }
+
+        // Get recently completed lab tasks
+        const recentReports = await Queue.find(query)
+            .sort({ updatedAt: -1 })
+            .limit(parseInt(limit))
+            .select('patientName requiredTest createdAt updatedAt currentStage _id');
+
+        res.status(200).json({
+            success: true,
+            data: recentReports
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// 🆕 GET LAB QUEUE BY STATUS
+exports.getLabQueueByStatus = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const status = req.params.status || 'Lab-Pending';
+
+        const queueData = await Queue.find({
+            clinicId: clinicId,
+            currentStage: status
+        })
+            .sort({ isEmergency: -1, createdAt: 1 })
+            .populate('doctorId', 'name specialization');
+
+        res.status(200).json({
+            success: true,
+            data: queueData
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 exports.uploadLabReport = async (req, res) => {
     console.log("🚀 [1] Controller Started: Upload request received.");
     try {

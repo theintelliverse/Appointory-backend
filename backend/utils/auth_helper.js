@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 
 const generateToken = (user) => {
     // 🔑 Flexible Payload: Use _id (staff) OR id (patient)

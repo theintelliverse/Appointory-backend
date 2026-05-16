@@ -85,10 +85,14 @@ exports.selfCheckIn = async (req, res) => {
 // 3️⃣ RECEPTIONIST: Get pending
 exports.getPendingRequests = async (req, res) => {
     try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
         const pending = await Queue.find({
             clinicId: req.user.clinicId,
             isApproved: false,
-            status: 'Pending-Approval'
+            status: 'Pending-Approval',
+            createdAt: { $gte: today }
         }).sort({ createdAt: 1 }).populate('doctorId', 'name specialization');
         res.status(200).json({ success: true, data: pending });
     } catch (error) {
@@ -474,6 +478,35 @@ exports.getPatientStatus = async (req, res) => {
     }
 };
 
+/**
+ * @desc Get estimated wait time for a doctor (Pre-booking)
+ * @route GET /api/queue/public/estimate-wait
+ */
+exports.getWaitEstimation = async (req, res) => {
+    try {
+        const { clinicId, doctorId, visitType } = req.query;
+
+        if (!clinicId || !doctorId) {
+            return res.status(400).json({ success: false, message: "Clinic and Doctor are required" });
+        }
+
+        const estimatedWait = await estimateWaitTimeFromDb({
+            clinicId,
+            doctorId,
+            visitType: visitType || 'new',
+            isEmergency: false,
+            peopleAhead: 0 // Will be calculated inside estimateWaitTimeFromDb for active queue
+        });
+
+        res.status(200).json({
+            success: true,
+            estimatedWait
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // 1️⃣2️⃣ Cancel
 exports.cancelVisit = async (req, res) => {
     try {
@@ -506,12 +539,16 @@ exports.getMedicalHistory = async (req, res) => {
 exports.getPublicDoctorQueue = async (req, res) => {
     try {
         const { doctorId } = req.params;
-        console.log("📺 TV Display requesting queue for Doctor ID:", doctorId);
+        
+        // Filter to show only today's patients
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
         const queue = await Queue.find({
             doctorId: doctorId,
             isApproved: true,
-            status: { $in: ['Waiting', 'In-Consultation'] } // Only show active patients
+            status: { $in: ['Waiting', 'In-Consultation'] },
+            createdAt: { $gte: today }
         })
             .select('tokenNumber patientName status isEmergency createdAt')
             .sort({
@@ -520,7 +557,6 @@ exports.getPublicDoctorQueue = async (req, res) => {
                 createdAt: 1     // Oldest first
             });
 
-        console.log(`✅ Found ${queue.length} patients for display.`);
         res.status(200).json({
             success: true,
             data: queue
@@ -595,3 +631,171 @@ exports.updateVitals = async (req, res) => {
         });
     }
 };
+
+// 🔬 LAB: Create New Test Request (From Lab Dashboard Quick Action)
+exports.createTestRequest = async (req, res) => {
+    try {
+        const { patientName, patientPhone, requiredTest, currentStage, clinicId, tokenNumber } = req.body;
+        const userClinicId = req.user.clinicId;
+
+        // Validate required fields
+        if (!patientName || !patientPhone) {
+            return res.status(400).json({
+                success: false,
+                message: 'Patient name and phone are required'
+            });
+        }
+
+        // Create new queue entry for lab test
+        const newTestRequest = await Queue.create({
+            clinicId: userClinicId || clinicId,
+            patientName,
+            patientPhone,
+            requiredTest: requiredTest || 'General',
+            currentStage: currentStage || 'Lab-Pending',
+            tokenNumber: tokenNumber || `LAB-${Date.now()}`,
+            status: 'Waiting',
+            isApproved: true,
+            visitType: 'Walk-in',
+            isEmergency: false,
+            createdAt: new Date()
+        });
+
+        console.log(`✅ New test request created: ${newTestRequest._id} for ${patientName}`);
+
+        // 📢 Emit socket update to lab dashboard
+        if (req.io) {
+            req.io.to(userClinicId.toString()).emit('queueUpdate');
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Test request created successfully',
+            data: newTestRequest
+        });
+    } catch (error) {
+        console.error('❌ Error creating test request:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to create test request: ' + error.message
+        });
+    }
+};
+
+// 🔬 LAB: Update Queue Stage (From Lab Dashboard Quick Action)
+exports.updateQueueStage = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { currentStage } = req.body;
+
+        if (!currentStage) {
+            return res.status(400).json({
+                success: false,
+                message: 'Current stage is required'
+            });
+        }
+
+        // Find and update the queue entry
+        const updatedQueue = await Queue.findByIdAndUpdate(
+            id,
+            { currentStage, updatedAt: new Date() },
+            { new: true }
+        );
+
+        if (!updatedQueue) {
+            return res.status(404).json({
+                success: false,
+                message: 'Queue entry not found'
+            });
+        }
+
+        console.log(`✅ Queue stage updated: ${id} -> ${currentStage}`);
+
+        // 📢 Emit socket update to lab dashboard
+        if (req.io) {
+            req.io.to(updatedQueue.clinicId.toString()).emit('queueUpdate');
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Queue stage updated successfully',
+            data: updatedQueue
+        });
+    } catch (error) {
+        console.error('❌ Error updating queue stage:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update queue stage: ' + error.message
+        });
+    }
+};
+
+// 📊 Doctor Dashboard Stats (NEW)
+exports.getDoctorDashboardStats = async (req, res) => {
+    try {
+        const doctorId = req.user.id || req.user._id;
+        const clinicId = req.user.clinicId;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        // 1. Scheduled Appointments for Today
+        const scheduledCount = await Queue.countDocuments({
+            clinicId,
+            doctorId,
+            visitType: 'Appointment',
+            isApproved: true,
+            appointmentDate: { $gte: today, $lt: tomorrow }
+        });
+
+        // 2. Currently In Consultation
+        const inConsultationCount = await Queue.countDocuments({
+            clinicId,
+            doctorId,
+            status: 'In-Consultation'
+        });
+
+        // 3. Pending Follow Ups
+        const pendingFollowUps = await Queue.countDocuments({
+            clinicId,
+            doctorId,
+            visitType: 'Walk-in', 
+            isApproved: true,
+            status: 'Waiting'
+        });
+
+        // 4. Queue Data for tabs
+        const queueData = await Queue.find({
+            clinicId,
+            doctorId,
+            isApproved: true,
+            createdAt: { $gte: today, $lt: tomorrow }
+        }).sort({ createdAt: 1 });
+
+        // 5. Avg Wait Time
+        let avgWait = 14; 
+
+        res.status(200).json({
+            success: true,
+            data: {
+                stats: {
+                    scheduled: scheduledCount,
+                    inConsultation: inConsultationCount,
+                    avgWaitTime: `${avgWait} mins`,
+                    pendingFollowUps: pendingFollowUps
+                },
+                queue: queueData,
+                reminders: [
+                    { id: 1, type: 'lab', title: 'Review lab reports', patient: 'Rahul Sharma', time: 'Today, 12:00 PM', color: 'red' },
+                    { id: 2, type: 'followup', title: 'Follow up', patient: 'Sneha Patel', time: 'Tomorrow, 10:30 AM', color: 'orange' },
+                    { id: 3, type: 'prescription', title: 'Pending prescriptions', patient: '3 prescriptions to complete', time: 'Today', color: 'purple' },
+                    { id: 4, type: 'patient', title: 'Patient due for follow up', patient: 'Anita Gupta', time: '24 May 2025', color: 'blue' }
+                ]
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

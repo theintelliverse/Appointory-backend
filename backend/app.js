@@ -7,6 +7,9 @@ const cors = require('cors');
 const http = require('http'); // 🔑 Required for WebSockets
 const { Server } = require('socket.io'); // 🔑 Required for WebSockets
 require('dotenv').config();
+
+// 🔑 Connect to MongoDB early so models never buffer-timeout
+const mongoose = require('./config/mongoose_connection');
 const {
     securityHeaders,
     globalApiLimiter,
@@ -32,6 +35,7 @@ const staffRoutes = require('./routes/staff_routes');
 const queueRoutes = require('./routes/queue_routes');
 const clinicroutes = require('./routes/clinic_routes');
 const callRoutes = require('./routes/call_routes');
+const labRoutes = require('./routes/lab_routes');
 
 const app = express();
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
@@ -180,6 +184,11 @@ if (!isVercel) {
 }
 
 // Middlewares
+app.use((req, res, next) => {
+    console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
 app.set('trust proxy', 1);
 app.use(securityHeaders);
 app.use(cors(corsOptions));
@@ -227,31 +236,51 @@ app.use('/api/staff', staffRoutes);
 app.use('/api/queue', queueRoutes);
 app.use('/api/clinic', clinicroutes);
 app.use('/api/call', callRoutes);
+app.use('/api/lab', labRoutes);
 
 // Health Check
 app.get('/', (req, res) => {
     res.send('Appointory Backend is running...');
 });
 
-app.get('/api/health', (req, res) => {
-    res.status(200).json({
-        success: true,
-        environment: process.env.NODE_ENV || 'development',
-        serverless: isVercel,
-        socketEnabled: !isVercel,
-        timestamp: new Date().toISOString()
+// Error Handler
+app.use((err, req, res, next) => {
+    console.error('❌ GLOBAL ERROR:', err.message);
+    console.error(err.stack);
+    res.status(err.status || 500).json({
+        success: false,
+        message: err.message || 'Internal Server Error'
     });
 });
 
 const PORT = process.env.PORT || 5000;
 
 if (!isVercel && require.main === module) {
-    // 🔑 IMPORTANT: Listen using 'server', not 'app'
-    server.listen(PORT, () => {
-        if (!isProduction) {
-            console.log(`🚀 Server & WebSockets running on port ${PORT}`);
+    // 🔑 Wait for MongoDB to be ready before accepting connections
+    const startServer = async () => {
+        try {
+            // Ensure the mongoose connection promise resolves before listening
+            if (mongoose.connection.readyState !== 1) {
+                await new Promise((resolve, reject) => {
+                    mongoose.connection.once('open', resolve);
+                    mongoose.connection.once('error', reject);
+                    // Fallback: start anyway after 12s even if still connecting
+                    setTimeout(resolve, 12000);
+                });
+            }
+        } catch (err) {
+            console.error('⚠️  MongoDB did not connect before server start:', err.message);
         }
-    });
+
+        // 🔑 IMPORTANT: Listen using 'server', not 'app'
+        server.listen(PORT, () => {
+            if (!isProduction) {
+                console.log(`🚀 Server & WebSockets running on port ${PORT}`);
+            }
+        });
+    };
+
+    startServer();
 }
 
 module.exports = app;

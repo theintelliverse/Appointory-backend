@@ -20,14 +20,14 @@ router.get('/public/booked-slots/:clinicId/:doctorId', clinicController.getBooke
  * @desc    Fetch current clinic details for the Settings page
  * @access  Private (Admin)
  */
-router.get('/me', protect, authorize('admin'), clinicController.getClinicProfile);
+router.get('/me', protect, authorize('admin', 'lab'), clinicController.getClinicProfile);
 
 /**
  * @route   PATCH /api/clinic/settings
  * @desc    Update Clinic Name, Code, Address, or Contact Number
  * @access  Private (Admin)
  */
-router.patch('/settings', protect, authorize('admin'), clinicController.updateClinicSettings);
+router.patch('/settings', protect, authorize('admin', 'lab'), clinicController.updateClinicSettings);
 
 /**
  * @route   DELETE /api/clinic/deactivate

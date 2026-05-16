@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient'); 
+const Queue = require('../models/Queue');
 const { hashPassword } = require('../utils/auth_helper');
 const { sendStaffCredentials } = require('../utils/send_email');
 
@@ -123,17 +124,34 @@ exports.toggleAvailability = async (req, res) => {
 // --- 🏥 PUBLIC: GET DOCTORS (Update this in staff_controller.js) ---
 exports.getPublicDoctors = async (req, res) => {
     try {
-        console.log("IO EXISTS:", !!req.io);
         const { clinicCode } = req.params;
         const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
         if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found" });
 
+        // Filter to show only today's patients
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
         const doctors = await User.find({ 
             clinicId: clinic._id, 
-            role: 'doctor'
-        }).select('name specialization education experience _id isAvailable'); // 🔑 Added isAvailable here
+            role: 'doctor',
+            isActive: { $ne: false }
+        }).select('name specialization education experience _id isAvailable');
 
-        res.status(200).json({ success: true, clinicName: clinic.name, doctors });
+        // Fetch Queue counts for each doctor (Today Only)
+        const doctorsWithQueue = await Promise.all(doctors.map(async (doc) => {
+            const queueCount = await Queue.countDocuments({
+                doctorId: doc._id,
+                status: { $in: ['Waiting', 'In-Consultation'] },
+                createdAt: { $gte: today }
+            });
+            return {
+                ...doc.toObject(),
+                queueCount
+            };
+        }));
+
+        res.status(200).json({ success: true, clinicName: clinic.name, doctors: doctorsWithQueue });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
