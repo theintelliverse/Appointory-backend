@@ -26,7 +26,7 @@ router.delete('/delete/:staffId', staffController.archiveStaff);
 // --- 🩺 CLINICAL DATA ---
 router.patch('/update-patient-profile/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientProfile);
 router.patch('/update-patient-vitals/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientVitals);
-router.get('/patient-full-profile/:phone', authorize('doctor', 'admin'), staffController.getPatientFullProfile);
+router.get('/patient-full-profile/:phone', authorize('doctor', 'admin', 'receptionist'), staffController.getPatientFullProfile);
 
 // --- 🔬 LAB OPERATIONS ---
 

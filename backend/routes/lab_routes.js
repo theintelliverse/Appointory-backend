@@ -4,7 +4,8 @@ const {
     uploadLabReport,
     getLabDashboardStats,
     getRecentReports,
-    getLabQueueByStatus
+    getLabQueueByStatus,
+    getLabAnalytics
 } = require('../controllers/lab_controller');
 const { protect, authorize } = require('../utils/auth_middleware');
 const { storage } = require('../utils/cloudinary_config');
@@ -20,6 +21,9 @@ router.use(authorize('lab', 'admin', 'doctor'));
 
 // 📊 GET LAB DASHBOARD STATISTICS
 router.get('/dashboard/stats', getLabDashboardStats);
+
+// 📊 GET LAB ANALYTICS
+router.get('/analytics', getLabAnalytics);
 
 // 📋 GET RECENT LAB REPORTS
 router.get('/reports/recent', getRecentReports);
