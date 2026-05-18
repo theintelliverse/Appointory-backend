@@ -32,6 +32,6 @@ router.get('/reports/recent', getRecentReports);
 router.get('/queue/:status', getLabQueueByStatus);
 
 // 📤 UPLOAD LAB REPORT
-router.post('/upload/:patientPhone/:queueId', upload.single('file'), uploadLabReport);
+router.post('/upload/:patientPhone/:queueId', upload.array('file', 10), uploadLabReport);
 
 module.exports = router;

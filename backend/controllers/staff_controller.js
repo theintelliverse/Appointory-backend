@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient'); 
 const Queue = require('../models/Queue');
+const MedicalRecord = require('../models/MedicalRecord');
 const { hashPassword } = require('../utils/auth_helper');
 const { sendStaffCredentials } = require('../utils/send_email');
 
@@ -322,5 +323,84 @@ exports.archiveStaff = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
+    }
+};
+
+// --- 🩺 GET ALL PRESCRIPTIONS FOR A DOCTOR ---
+exports.getAllPrescriptions = async (req, res) => {
+    try {
+        const doctorId = req.user.id || req.user._id;
+        const clinicId = req.user.clinicId;
+
+        // Find all medical records (prescriptions) created by this doctor at this clinic
+        const records = await MedicalRecord.find({ clinicId, doctorId })
+            .sort({ visitDate: -1 });
+
+        // Map visitDate to createdAt so it matches the expected frontend keys perfectly
+        const mappedRecords = records.map(r => {
+            const obj = r.toObject();
+            obj.createdAt = r.visitDate;
+            return obj;
+        });
+
+        res.status(200).json({
+            success: true,
+            data: mappedRecords
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- ➕ CREATE NEW PRESCRIPTION ---
+exports.createPrescription = async (req, res) => {
+    try {
+        const { patientName, patientPhone, diagnosis, notes, medicines } = req.body;
+        const doctorId = req.user.id || req.user._id;
+        const clinicId = req.user.clinicId;
+
+        if (!patientName || !patientPhone) {
+            return res.status(400).json({ success: false, message: "Patient Name and Phone are required" });
+        }
+
+        // Create Medical Record
+        const record = await MedicalRecord.create({
+            clinicId,
+            doctorId,
+            patientName,
+            patientPhone,
+            diagnosis: diagnosis || notes || "General Consultation",
+            notes: notes || "Issued directly from Prescription Records",
+            medicines: medicines || [],
+            visitDate: Date.now()
+        });
+
+        // Add to digital locker history if the patient profile exists
+        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        if (patient) {
+            patient.medicalHistory.push({
+                visitId: record._id,
+                doctorName: req.user.name || "Doctor",
+                clinicName: req.user.clinicName || "Our Clinic",
+                diagnosis: diagnosis || notes || "General Consultation",
+                date: Date.now(),
+                medicines: medicines || [],
+                symptoms: notes || "Direct Prescription"
+            });
+            await patient.save();
+        }
+
+        // Map visitDate to createdAt for response consistency
+        const resObj = record.toObject();
+        resObj.createdAt = record.visitDate;
+
+        res.status(201).json({
+            success: true,
+            message: "Prescription issued successfully!",
+            data: resObj
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };

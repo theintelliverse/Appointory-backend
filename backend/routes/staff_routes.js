@@ -27,6 +27,8 @@ router.delete('/delete/:staffId', staffController.archiveStaff);
 router.patch('/update-patient-profile/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientProfile);
 router.patch('/update-patient-vitals/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientVitals);
 router.get('/patient-full-profile/:phone', authorize('doctor', 'admin', 'receptionist'), staffController.getPatientFullProfile);
+router.get('/all-prescriptions', authorize('doctor', 'admin'), staffController.getAllPrescriptions);
+router.post('/create-prescription', authorize('doctor', 'admin'), staffController.createPrescription);
 
 // --- 🔬 LAB OPERATIONS ---
 
