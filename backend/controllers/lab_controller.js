@@ -8,7 +8,10 @@ exports.getLabDashboardStats = async (req, res) => {
         const clinicId = req.user.clinicId;
         const filterAll = req.query.filter === 'all';
         
-        const query = { clinicId: clinicId };
+        const query = { 
+            clinicId: clinicId,
+            currentStage: { $in: ['Lab-Pending', 'Lab-Processing', 'Lab-Completed', 'Lab-Rejected'] }
+        };
         
         if (!filterAll) {
             const today = new Date();

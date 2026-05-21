@@ -33,6 +33,13 @@ const sendTwilioAlert = async (phone, message) => {
     }
 };
 
+// Helper: get clean frontend base URL from env
+const getFrontendUrl = () => {
+    const raw = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/["']/g, '');
+    // Take the first URL if comma-separated
+    return raw.split(',')[0].trim().replace(/\/$/, '');
+};
+
 // 1️⃣ Add Patient to Queue (Manual - SMS Triggered)
 exports.addToQueue = async (req, res) => {
     try {
@@ -46,6 +53,13 @@ exports.addToQueue = async (req, res) => {
         const newEntry = await Queue.create({
             clinicId, patientName, patientPhone, doctorId, tokenNumber, visitType, isEmergency, isApproved: true, status: 'Waiting'
         });
+
+        // 📱 Send SMS with live tracking link
+        const trackingUrl = `${getFrontendUrl()}/patient/status?id=${newEntry._id}`;
+        const smsMsg = `✅ Token: ${tokenNumber} | Track your live queue status here: ${trackingUrl} - Appointory`;
+        if (patientPhone) {
+            sendTwilioAlert(patientPhone, smsMsg).catch(() => {});
+        }
 
         // 📢 DEBUG LOG
         console.log(`📢 Emit: queueUpdate to Room: ${clinicId}`);
@@ -92,8 +106,11 @@ exports.getPendingRequests = async (req, res) => {
             clinicId: req.user.clinicId,
             isApproved: false,
             status: 'Pending-Approval',
-            createdAt: { $gte: today }
-        }).sort({ createdAt: 1 }).populate('doctorId', 'name specialization');
+            $or: [
+                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today } },
+                { visitType: 'Appointment', appointmentDate: { $gte: today } }
+            ]
+        }).sort({ appointmentDate: 1, createdAt: 1 }).populate('doctorId', 'name specialization');
         res.status(200).json({ success: true, data: pending });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -114,30 +131,14 @@ exports.approvePatient = async (req, res) => {
             isApproved: true, status: 'Waiting', tokenNumber, isEmergency: !!isEmergency
         }, { new: true }).populate('clinicId', 'name');
 
-        // 📱 Send Simple SMS Notification (OTP-style)
-        const simpleMessage = `Appointment Confirmed! Token: ${tokenNumber} | Clinic: ${entry.clinicId.name} | Arrive 10 mins early. - Appointory`;
+        // 📱 Send SMS with live tracking link
+        const trackingUrl = `${getFrontendUrl()}/patient/status?id=${entry._id}`;
+        const simpleMessage = `✅ Confirmed! Token: ${tokenNumber} | Clinic: ${entry.clinicId.name} | Track live: ${trackingUrl} - Appointory`;
 
-        try {
-            if (!entry.patientPhone) {
-                console.error("❌ SMS Error - No patient phone number in queue entry");
-                return;
-            }
-            if (!process.env.TWILIO_PHONE_NUMBER) {
-                console.error("❌ SMS Error - Missing TWILIO_PHONE_NUMBER env var");
-                return;
-            }
-
-            const cleanPhone = entry.patientPhone.replace(/\D/g, '').slice(-10);
-            const formattedPhone = `+91${cleanPhone}`;
-
-            const smsResult = await client.messages.create({
-                body: simpleMessage,
-                from: process.env.TWILIO_PHONE_NUMBER,
-                to: formattedPhone
+        if (entry.patientPhone) {
+            sendTwilioAlert(entry.patientPhone, simpleMessage).catch(err => {
+                console.error("❌ SMS Error:", err.message);
             });
-            console.log(`✅ SMS Sent to ${formattedPhone} | SID: ${smsResult.sid}`);
-        } catch (smsError) {
-            console.error("❌ SMS Error - Phone:", entry.patientPhone, "Formatted:", `+91${entry.patientPhone?.replace(/\D/g, '').slice(-10)}`, "Error:", smsError.message, "Code:", smsError.code);
         }
 
         // �📢 DEBUG LOG
@@ -156,6 +157,11 @@ exports.startConsultation = async (req, res) => {
         }, { new: true }).populate('doctorId', 'name');
 
         if (!entry) return res.status(404).json({ message: "Patient not found" });
+
+        // Update Patient's lastVisit immediately when consultation starts
+        if (entry.patientId) {
+            await Patient.findByIdAndUpdate(entry.patientId, { lastVisit: Date.now() });
+        }
 
         // � Send Simple SMS Notification (Consultation Starting)
         const doctorName = entry.doctorId?.name || 'Doctor';
@@ -243,6 +249,7 @@ exports.completeVisit = async (req, res) => {
                 medicines: medicines || [],
                 symptoms: notes
             });
+            patient.lastVisit = Date.now();
             await patient.save();
         }
 
@@ -326,7 +333,7 @@ exports.getLiveQueue = async (req, res) => {
             status: { $in: ['Waiting', 'In-Consultation'] },
             $or: [
                 // Show walk-ins created today
-                { visitType: 'Walk-in', createdAt: { $gte: today, $lt: tomorrow } },
+                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
                 // Show appointments scheduled for today
                 { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
             ]
@@ -434,7 +441,7 @@ exports.getPatientStatus = async (req, res) => {
     try {
         const { queueId } = req.params;
         const entry = await Queue.findById(queueId)
-            .populate('clinicId', 'name')
+            .populate('clinicId', 'name openingTime closingTime')
             .populate('doctorId', 'name isAvailable');
 
         if (!entry) return res.status(200).json({ isCompleted: true });
@@ -445,22 +452,54 @@ exports.getPatientStatus = async (req, res) => {
 
         const doctorObjectId = entry.doctorId?._id || entry.doctorId;
 
-        const peopleAhead = await Queue.countDocuments({
-            doctorId: doctorObjectId,
-            status: 'Waiting',
-            isApproved: true,
-            createdAt: { $lt: entry.createdAt }
-        });
+        const clinicObjectId = entry.clinicId?._id || entry.clinicId;
 
-        const estimatedWait = await estimateWaitTimeFromDb({
-            clinicId: entry.clinicId,
+        // Only count TODAY's queue (old stale entries from past days must not count)
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date(todayStart);
+        todayEnd.setDate(todayEnd.getDate() + 1);
+
+        // Count people ACTUALLY ahead: same clinic, same doctor, today only
+        const aheadQuery = {
+            _id: { $ne: entry._id },
+            clinicId: clinicObjectId,
             doctorId: doctorObjectId,
-            visitType: entry.visitType,
-            problem: entry.reason || entry.diagnosis || entry.consultationNotes,
-            isEmergency: !!entry.isEmergency,
-            tokenNumber: entry.tokenNumber,
-            peopleAhead
-        });
+            isApproved: true,
+            status: { $in: ['Waiting', 'In-Consultation'] },
+            createdAt: { $gte: todayStart, $lt: todayEnd },
+            $or: [
+                // Walk-ins created before this patient
+                { visitType: { $ne: 'Appointment' }, createdAt: { $lt: entry.createdAt } },
+                // Appointments with earlier slot time
+                { visitType: 'Appointment', appointmentDate: { $lt: entry.appointmentDate || entry.createdAt } }
+            ]
+        };
+
+        const peopleAhead = await Queue.countDocuments(aheadQuery);
+
+        // Debug: log to backend console so we can verify
+        console.log(`📊 PatientStatus [${entry.patientName}] → Ahead: ${peopleAhead} | Clinic: ${clinicObjectId} | Doctor: ${doctorObjectId} | Status: ${entry.status}`);
+
+        // Try AI predictor, fall back to simple 14-min-per-person formula
+        let estimatedWait;
+        try {
+            const aiResult = await estimateWaitTimeFromDb({
+                clinicId: entry.clinicId,
+                doctorId: doctorObjectId,
+                visitType: entry.visitType,
+                problem: entry.reason || entry.diagnosis || entry.consultationNotes,
+                isEmergency: !!entry.isEmergency,
+                tokenNumber: entry.tokenNumber,
+                peopleAhead
+            });
+            // Validate: if NaN / falsy / too large, use fallback
+            estimatedWait = (typeof aiResult === 'number' && !isNaN(aiResult) && aiResult > 0 && aiResult < 300)
+                ? aiResult
+                : Math.max(peopleAhead * 14, 5);
+        } catch {
+            estimatedWait = Math.max(peopleAhead * 14, 5);
+        }
 
         res.status(200).json({
             success: true,
@@ -468,6 +507,10 @@ exports.getPatientStatus = async (req, res) => {
                 patientName: entry.patientName,
                 tokenNumber: entry.tokenNumber,
                 status: entry.status,
+                clinicName: entry.clinicId?.name || 'Clinic',
+                openingTime: entry.clinicId?.openingTime || '09:00',
+                closingTime: entry.clinicId?.closingTime || '17:00',
+                isEmergency: entry.isEmergency,
                 peopleAhead,
                 estimatedWait,
                 isDoctorOnBreak: !(entry.doctorId && entry.doctorId.isAvailable)
@@ -539,7 +582,7 @@ exports.getMedicalHistory = async (req, res) => {
 exports.getPublicDoctorQueue = async (req, res) => {
     try {
         const { doctorId } = req.params;
-        
+
         // Filter to show only today's patients
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -570,7 +613,7 @@ exports.getPublicDoctorQueue = async (req, res) => {
 exports.updateVitals = async (req, res) => {
     try {
         const { queueId } = req.params;
-        const { bloodPressure, pulseRate, temperature, weight, bmi } = req.body;
+        const { bloodPressure, pulseRate, temperature, weight, bmi, sugarLevel, spO2 } = req.body;
         const doctorId = req.user.id;
 
         // Validate input
@@ -606,6 +649,8 @@ exports.updateVitals = async (req, res) => {
             bloodPressure,
             pulseRate,
             temperature,
+            sugarLevel,
+            spO2,
             weight,
             bmi,
             recordedBy: doctorId,
@@ -735,7 +780,11 @@ exports.getDoctorDashboardStats = async (req, res) => {
     try {
         const doctorId = req.user.id || req.user._id;
         const clinicId = req.user.clinicId;
-        const today = new Date();
+
+        let today = new Date();
+        if (req.query.date) {
+            today = new Date(req.query.date);
+        }
         today.setHours(0, 0, 0, 0);
 
         const tomorrow = new Date(today);
@@ -746,7 +795,6 @@ exports.getDoctorDashboardStats = async (req, res) => {
             clinicId,
             doctorId,
             visitType: 'Appointment',
-            isApproved: true,
             appointmentDate: { $gte: today, $lt: tomorrow }
         });
 
@@ -761,21 +809,23 @@ exports.getDoctorDashboardStats = async (req, res) => {
         const pendingFollowUps = await Queue.countDocuments({
             clinicId,
             doctorId,
-            visitType: 'Walk-in', 
+            visitType: 'Walk-in',
             isApproved: true,
             status: 'Waiting'
         });
 
-        // 4. Queue Data for tabs
+        // 4. Queue Data for tabs — walk-ins by createdAt (must be approved), appointments by appointmentDate (approved or pending)
         const queueData = await Queue.find({
             clinicId,
             doctorId,
-            isApproved: true,
-            createdAt: { $gte: today, $lt: tomorrow }
-        }).sort({ createdAt: 1 });
+            $or: [
+                { visitType: { $ne: 'Appointment' }, isApproved: true, createdAt: { $gte: today, $lt: tomorrow } },
+                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+            ]
+        }).sort({ isEmergency: -1, appointmentDate: 1, createdAt: 1 });
 
         // 5. Avg Wait Time
-        let avgWait = 14; 
+        let avgWait = 14;
 
         res.status(200).json({
             success: true,
@@ -798,4 +848,4 @@ exports.getDoctorDashboardStats = async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
-};
+};

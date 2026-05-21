@@ -10,10 +10,12 @@ const medicalRecordSchema = mongoose.Schema({
   diagnosis: { type: String }, // Diagnosis from doctor
   medicines: [
     {
-      name: { type: String }, // Medicine name (Kyare kai Vastu)
-      time: { type: String }, // When to take (Savar/Bapor/Sanj) - (Kone bethe)
-      amount: { type: String }, // Per dose dosage (Per Dose)
-      total: { type: String } // Total quantity to purchase (Total Ketli)
+      name: { type: String },
+      strength: { type: String },
+      whenToTake: { type: String },
+      beforeAfter: { type: String },
+      duration: { type: String },
+      instructions: { type: String }
     }
   ],
   visitDate: { type: Date, default: Date.now },
