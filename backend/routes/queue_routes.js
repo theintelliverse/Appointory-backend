@@ -23,7 +23,8 @@ const {
     updateVitals,
     createTestRequest,
     updateQueueStage,
-    getDoctorDashboardStats
+    getDoctorDashboardStats,
+    getWaitEstimation
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -34,6 +35,7 @@ const { protect, authorize } = require('../utils/auth_middleware');
 router.post('/public/checkin', selfCheckIn);
 router.get('/public/status/:queueId', getPatientStatus);
 router.delete('/public/cancel/:queueId', cancelVisit);
+router.get('/public/estimate-wait', getWaitEstimation);
 
 // Add this line to queue_routes.js
 router.get('/public/doctor-display/:doctorId', getPublicDoctorQueue);

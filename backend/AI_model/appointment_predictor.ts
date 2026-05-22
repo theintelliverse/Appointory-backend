@@ -23,6 +23,10 @@ export interface AppointmentInput {
     diagnosis?: string;
     notes?: string;
     consultationNotes?: string;
+    currentStage?: string;
+    appointmentDate?: string | Date;
+    slot?: string;
+    queueId?: string;
 }
 
 export interface WaitTimeContext extends AppointmentInput {
@@ -414,6 +418,11 @@ function calculatePrediction(userData: AppointmentInput, peopleAhead = 0): numbe
         prediction *= 1.08;
     }
 
+    // Scale prediction by 1.5x for patients referred to the lab
+    if (userData.currentStage === 'Lab-Pending' || userData.currentStage === 'Lab-Processing') {
+        prediction *= 1.5;
+    }
+
     prediction += Math.max(peopleAhead, 0) * Math.max(baseServiceTime, 8);
     prediction += Math.max(tokenNo - 1, 0) * 1.25;
 
@@ -425,18 +434,39 @@ export function predictSingleUser(userData: AppointmentInput): number {
 }
 
 export async function estimateWaitTimeFromDb(context: WaitTimeContext): Promise<number> {
-    if (context.clinicId || context.doctorId) {
-        await loadHistoricalStats({ clinicId: context.clinicId, doctorId: context.doctorId, limit: 500 });
-    } else if (!modelReady) {
-        await loadHistoricalStats({ limit: 500 });
+    if (!modelReady && !trainingInProgress) {
+        await loadHistoricalStats({ limit: 2000 });
     }
 
     let peopleAhead = Math.max(context.peopleAhead || 0, 0);
 
     if (!peopleAhead && (context.clinicId || context.doctorId)) {
+        const targetDayStart = new Date();
+        const targetDayEnd = new Date();
+
+        if (context.appointmentDate) {
+            const dateObj = new Date(context.appointmentDate);
+            if (!isNaN(dateObj.getTime())) {
+                targetDayStart.setTime(dateObj.getTime());
+                targetDayStart.setHours(0, 0, 0, 0);
+                targetDayEnd.setTime(dateObj.getTime());
+                targetDayEnd.setHours(23, 59, 59, 999);
+            } else {
+                targetDayStart.setHours(0, 0, 0, 0);
+                targetDayEnd.setHours(23, 59, 59, 999);
+            }
+        } else {
+            targetDayStart.setHours(0, 0, 0, 0);
+            targetDayEnd.setHours(23, 59, 59, 999);
+        }
+
         const queueQuery: Record<string, unknown> = {
             isApproved: true,
-            status: { $in: ['Waiting', 'In-Consultation'] }
+            status: { $in: ['Waiting', 'In-Consultation'] },
+            $or: [
+                { appointmentDate: { $gte: targetDayStart, $lte: targetDayEnd } },
+                { createdAt: { $gte: targetDayStart, $lte: targetDayEnd } }
+            ]
         };
 
         if (context.clinicId) {
@@ -448,24 +478,52 @@ export async function estimateWaitTimeFromDb(context: WaitTimeContext): Promise<
         }
 
         const activeQueue = (await QueueModel.find(queueQuery)
-            .sort({ createdAt: 1 })
-            .select('createdAt appointmentDate isEmergency tokenNumber clinicId doctorId visitType reason diagnosis consultationNotes')
+            .select('createdAt appointmentDate isEmergency tokenNumber clinicId doctorId visitType reason diagnosis consultationNotes currentStage status')
             .lean()) as Array<Record<string, unknown>>;
 
+        let targetTimeMin: number | null = null;
+        const slotTime = context.appointmentTime || context.time || context.slot;
+        if (slotTime) {
+            targetTimeMin = convertTimeToMin(slotTime);
+        }
+
         if (activeQueue.length > 0) {
-            const currentKey = context.tokenNumber ? String(context.tokenNumber) : '';
-            const currentTime = context.time || context.appointmentTime || '';
-            peopleAhead = activeQueue.filter((entry) => {
-                if (currentKey && String(entry.tokenNumber || '') === currentKey) {
-                    return false;
+            // Sort queue: In-Consultation first, then emergency first, then by time (appointmentDate or createdAt)
+            const sortedQueue = [...activeQueue].sort((a, b) => {
+                const aInConsult = a.status === 'In-Consultation';
+                const bInConsult = b.status === 'In-Consultation';
+                if (aInConsult !== bInConsult) return aInConsult ? -1 : 1;
+
+                if (a.isEmergency !== b.isEmergency) return a.isEmergency ? -1 : 1;
+
+                const aTime = new Date((a.appointmentDate || a.createdAt) as string).getTime();
+                const bTime = new Date((b.appointmentDate || b.createdAt) as string).getTime();
+                return aTime - bTime;
+            });
+
+            // Find context patient in the sorted list
+            const contextIndex = sortedQueue.findIndex((entry) => 
+                (context.tokenNumber && String(entry.tokenNumber) === String(context.tokenNumber)) ||
+                (context.queueId && String(entry._id) === String(context.queueId))
+            );
+
+            if (contextIndex !== -1) {
+                peopleAhead = contextIndex;
+            } else {
+                if (targetTimeMin !== null) {
+                    peopleAhead = sortedQueue.filter((entry) => {
+                        const entryTime = (entry.appointmentDate || entry.createdAt) as string | Date;
+                        const entryTimeMin = convertTimeToMin(entryTime);
+                        return entryTimeMin < (targetTimeMin as number);
+                    }).length;
+                } else {
+                    peopleAhead = sortedQueue.length;
                 }
-
-                return true;
-            }).length;
-
-            if (!context.time && currentTime) {
-                context.time = currentTime;
             }
+
+            // Add weight for lab patients
+            const labCount = activeQueue.filter(entry => entry.currentStage === 'Lab-Pending' || entry.currentStage === 'Lab-Processing').length;
+            peopleAhead += labCount * 0.5; // Lab patients add 50% more weight to wait time
         }
     }
 

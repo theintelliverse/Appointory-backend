@@ -74,7 +74,7 @@ exports.getRecentReports = async (req, res) => {
         const recentReports = await Queue.find(query)
             .sort({ updatedAt: -1 })
             .limit(parseInt(limit))
-            .select('patientName requiredTest createdAt updatedAt currentStage _id');
+            .select('patientName patientPhone requiredTest createdAt updatedAt currentStage _id');
 
         res.status(200).json({
             success: true,

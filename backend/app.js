@@ -10,6 +10,7 @@ require('dotenv').config();
 
 // 🔑 Connect to MongoDB early so models never buffer-timeout
 const mongoose = require('./config/mongoose_connection');
+const { initializePredictor } = require('./AI_model/appointment_predictor');
 const {
     securityHeaders,
     globalApiLimiter,
@@ -270,6 +271,15 @@ if (!isVercel && require.main === module) {
             }
         } catch (err) {
             console.error('⚠️  MongoDB did not connect before server start:', err.message);
+        }
+
+        // Initialize AI Prediction Model
+        try {
+            console.log('🤖 Initializing AI Appointment Predictor...');
+            await initializePredictor();
+            console.log('✅ AI Predictor Ready.');
+        } catch (err) {
+            console.error('⚠️ AI Predictor initialization failed:', err.message);
         }
 
         // 🔑 IMPORTANT: Listen using 'server', not 'app'

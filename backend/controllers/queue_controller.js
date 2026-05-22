@@ -338,7 +338,29 @@ exports.getLiveQueue = async (req, res) => {
                 { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
             ]
         }).sort({ isEmergency: -1, createdAt: 1 }).populate('doctorId', 'name specialization');
-        res.status(200).json({ success: true, data: queue });
+
+        const queueWithWait = await Promise.all(queue.map(async (item) => {
+            const itemObj = item.toObject ? item.toObject() : item;
+            try {
+                const doctorObjectId = item.doctorId?._id || item.doctorId;
+                const waitTime = await estimateWaitTimeFromDb({
+                    clinicId: item.clinicId,
+                    doctorId: doctorObjectId,
+                    visitType: item.visitType,
+                    problem: item.reason || item.diagnosis || item.consultationNotes,
+                    isEmergency: !!item.isEmergency,
+                    tokenNumber: item.tokenNumber,
+                    queueId: item._id,
+                    appointmentDate: item.appointmentDate || item.createdAt
+                });
+                itemObj.estimatedWait = waitTime;
+            } catch (err) {
+                itemObj.estimatedWait = 15;
+            }
+            return itemObj;
+        }));
+
+        res.status(200).json({ success: true, data: queueWithWait });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -359,7 +381,28 @@ exports.getDoctorQueue = async (req, res) => {
             status: { $in: ['Waiting', 'In-Consultation'] },
             createdAt: { $gte: today }
         }).sort({ createdAt: 1 });
-        res.status(200).json({ success: true, data: myQueue });
+
+        const myQueueWithWait = await Promise.all(myQueue.map(async (item) => {
+            const itemObj = item.toObject ? item.toObject() : item;
+            try {
+                const waitTime = await estimateWaitTimeFromDb({
+                    clinicId: item.clinicId,
+                    doctorId: doctorId,
+                    visitType: item.visitType,
+                    problem: item.reason || item.diagnosis || item.consultationNotes,
+                    isEmergency: !!item.isEmergency,
+                    tokenNumber: item.tokenNumber,
+                    queueId: item._id,
+                    appointmentDate: item.appointmentDate || item.createdAt
+                });
+                itemObj.estimatedWait = waitTime;
+            } catch (err) {
+                itemObj.estimatedWait = 15;
+            }
+            return itemObj;
+        }));
+
+        res.status(200).json({ success: true, data: myQueueWithWait });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -824,8 +867,33 @@ exports.getDoctorDashboardStats = async (req, res) => {
             ]
         }).sort({ isEmergency: -1, appointmentDate: 1, createdAt: 1 });
 
+        const queueWithWait = await Promise.all(queueData.map(async (item) => {
+            const itemObj = item.toObject ? item.toObject() : item;
+            try {
+                const waitTime = await estimateWaitTimeFromDb({
+                    clinicId: item.clinicId,
+                    doctorId: doctorId,
+                    visitType: item.visitType,
+                    problem: item.reason || item.diagnosis || item.consultationNotes,
+                    isEmergency: !!item.isEmergency,
+                    tokenNumber: item.tokenNumber,
+                    queueId: item._id,
+                    appointmentDate: item.appointmentDate || item.createdAt
+                });
+                itemObj.estimatedWait = waitTime;
+            } catch (err) {
+                itemObj.estimatedWait = 15;
+            }
+            return itemObj;
+        }));
+
         // 5. Avg Wait Time
+        const waitingPatients = queueWithWait.filter(p => p.status === 'Waiting');
         let avgWait = 14;
+        if (waitingPatients.length > 0) {
+            const totalWait = waitingPatients.reduce((sum, p) => sum + (p.estimatedWait || 0), 0);
+            avgWait = Math.round(totalWait / waitingPatients.length);
+        }
 
         res.status(200).json({
             success: true,
@@ -836,7 +904,7 @@ exports.getDoctorDashboardStats = async (req, res) => {
                     avgWaitTime: `${avgWait} mins`,
                     pendingFollowUps: pendingFollowUps
                 },
-                queue: queueData,
+                queue: queueWithWait,
                 reminders: [
                     { id: 1, type: 'lab', title: 'Review lab reports', patient: 'Rahul Sharma', time: 'Today, 12:00 PM', color: 'red' },
                     { id: 2, type: 'followup', title: 'Follow up', patient: 'Sneha Patel', time: 'Tomorrow, 10:30 AM', color: 'orange' },
