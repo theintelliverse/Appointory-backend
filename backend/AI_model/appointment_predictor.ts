@@ -3,8 +3,9 @@
  * Database-backed predictor used by the Node backend.
  */
 
-import * as MedicalRecord from '../models/MedicalRecord';
-import * as QueueModel from '../models/Queue';
+
+import * as MedicalRecord from '../models/MedicalRecord.js';
+import * as QueueModel from '../models/Queue.js';
 
 export interface AppointmentInput {
     emergency?: string | boolean | number;
@@ -86,6 +87,7 @@ let clinicBuckets: Record<string, AverageBucket> = {};
 let visitTypeBuckets: Record<string, AverageBucket> = {};
 let emergencyBuckets: Record<string, AverageBucket> = {};
 let timeSlotBuckets: Record<string, AverageBucket> = {};
+let dayOfWeekBuckets: Record<string, AverageBucket> = {};
 
 let problemLookup: Record<string, number> = {};
 let doctorLookup: Record<string, number> = {};
@@ -93,6 +95,7 @@ let clinicLookup: Record<string, number> = {};
 let visitTypeLookup: Record<string, number> = {};
 let emergencyLookup: Record<string, number> = {};
 let timeSlotLookup: Record<string, number> = {};
+let dayOfWeekLookup: Record<string, number> = {};
 
 function safeStringifyId(value: unknown): string {
     if (!value) {
@@ -167,14 +170,31 @@ export function convertTimeToMin(value: unknown): number {
     }
 }
 
-function addSample(bucketMap: Record<string, AverageBucket>, key: string, value: number): void {
+function addSample(bucketMap: Record<string, AverageBucket>, key: string, value: number, isLiveUpdate = false): void {
     if (!key) {
         return;
     }
 
     const bucket = bucketMap[key] || { sum: 0, count: 0 };
-    bucket.sum += value;
-    bucket.count += 1;
+    
+    // Exponential Moving Average (EMA) for Recency Bias
+    // Deep Learning concept: Act like an optimizer (SGD/Adam) with a learning rate (alpha)
+    if (isLiveUpdate && bucket.count > 0) {
+        const alpha = 0.35; // Learning Rate
+        const currentAvg = bucket.sum / bucket.count;
+        const newAvg = (alpha * value) + ((1 - alpha) * currentAvg);
+        
+        // Adjust sum so sum/count equals the new moving average
+        bucket.sum = newAvg * bucket.count;
+        // Cap count to prevent integer overflow over long periods
+        if (bucket.count < 1000) {
+            bucket.count += 1;
+        }
+    } else {
+        bucket.sum += value;
+        bucket.count += 1;
+    }
+    
     bucketMap[key] = bucket;
 }
 
@@ -270,6 +290,7 @@ function rebuildDerivedLookups(): void {
     visitTypeLookup = rebuildLookup(visitTypeBuckets);
     emergencyLookup = rebuildLookup(emergencyBuckets);
     timeSlotLookup = rebuildLookup(timeSlotBuckets);
+    dayOfWeekLookup = rebuildLookup(dayOfWeekBuckets);
 }
 
 async function loadHistoricalStats(options: { clinicId?: unknown; doctorId?: unknown; limit?: number } = {}): Promise<void> {
@@ -292,17 +313,17 @@ async function loadHistoricalStats(options: { clinicId?: unknown; doctorId?: unk
 
         const [medicalRecords, queueRecords] = await Promise.all([
             MedicalRecord.find(query)
-            .sort({ visitDate: -1 })
-            .limit(options.limit || 500)
-            .select('clinicId doctorId diagnosis notes duration')
-            .lean(),
+                .sort({ visitDate: -1 })
+                .limit(options.limit || 500)
+                .select('clinicId doctorId diagnosis notes duration')
+                .lean(),
             QueueModel.find({
                 status: 'Completed'
             })
-            .sort({ endTime: -1, createdAt: -1 })
-            .limit(options.limit || 500)
-            .select('clinicId doctorId visitType isEmergency reason diagnosis consultationNotes startTime endTime status createdAt')
-            .lean()
+                .sort({ endTime: -1, createdAt: -1 })
+                .limit(options.limit || 500)
+                .select('clinicId doctorId visitType isEmergency reason diagnosis consultationNotes startTime endTime status createdAt')
+                .lean()
         ]);
 
         const records = medicalRecords as MedicalRecordLike[];
@@ -314,6 +335,7 @@ async function loadHistoricalStats(options: { clinicId?: unknown; doctorId?: unk
         visitTypeBuckets = {};
         emergencyBuckets = {};
         timeSlotBuckets = {};
+        dayOfWeekBuckets = {};
         totalSamples = 0;
         globalMeanServiceTime = 20;
 
@@ -345,6 +367,8 @@ async function loadHistoricalStats(options: { clinicId?: unknown; doctorId?: unk
             const visitType = normalizeVisitType(record.visitType || 'walk-in');
             const emergencyKey = record.isEmergency ? 'emergency' : 'normal';
             const timeSlot = getTimeSlotKey(record.createdAt || record.startTime || record.endTime);
+            const recordDate = new Date((record.createdAt || record.startTime || record.endTime) as string | Date || Date.now());
+            const dayOfWeek = recordDate.getDay().toString();
 
             totalSamples += 1;
             globalMeanServiceTime = totalSamples === 1
@@ -357,6 +381,7 @@ async function loadHistoricalStats(options: { clinicId?: unknown; doctorId?: unk
             addSample(visitTypeBuckets, visitType, duration);
             addSample(emergencyBuckets, emergencyKey, duration);
             addSample(timeSlotBuckets, timeSlot, duration);
+            addSample(dayOfWeekBuckets, dayOfWeek, duration);
         }
 
         rebuildDerivedLookups();
@@ -381,27 +406,60 @@ function calculatePrediction(userData: AppointmentInput, peopleAhead = 0): numbe
     const emergencyKey = cleanBasic(userData.emergency ?? 'normal');
     const visitType = normalizeVisitType(userData.visit_type ?? userData.visitType ?? 'new');
     const timeMin = convertTimeToMin(userData.time ?? userData.appointmentTime ?? '09:00');
-    const tokenNo = Number.parseInt(String(userData.token_no ?? userData.tokenNumber ?? 1), 10);
+
+    // Extract digits from token like "P-1" or "T-12"
+    const rawToken = String(userData.token_no ?? userData.tokenNumber ?? '1');
+    const digitsOnly = rawToken.replace(/\D/g, '');
+    const tokenNo = digitsOnly ? Number.parseInt(digitsOnly, 10) : 1;
+
     const doctorId = extractDoctorKey(userData.doctor_id ?? userData.doctorId);
     const clinicId = extractClinicKey(userData.clinicId);
     const problem = extractProblemKey(userData);
     const timeSlot = getTimeSlotKey(userData.time ?? userData.appointmentTime ?? '09:00');
 
+    const recordDate = new Date(userData.appointmentDate || Date.now());
+    const dayOfWeek = recordDate.getDay().toString();
+
     const baseServiceTime = getBaseServiceTime(userData);
+    
+    // Deep Learning Concept: Attention Mechanism (Confidence-based Weights)
+    // Instead of static weights, we calculate confidence based on sample count.
+    // If a bucket has many samples (high confidence), it gets a higher attention weight.
+    const getConfidenceWeight = (lookupDict: Record<string, number>, key: string, baseWeight: number) => {
+        // We look at the count in the buckets (which we can access via global maps)
+        const count = problemBuckets[key]?.count || doctorBuckets[key]?.count || clinicBuckets[key]?.count || 1;
+        // Sigmoid-like scaling for confidence: maxes out at 1.5x the base weight if >50 samples
+        const confidenceMultiplier = 0.5 + (1 - Math.exp(-count / 20)); 
+        return baseWeight * confidenceMultiplier;
+    };
+
+    const wProblem = getConfidenceWeight(problemLookup, problem, 0.25);
+    const wDoctor = getConfidenceWeight(doctorLookup, doctorId, 0.20);
+    const wClinic = getConfidenceWeight(clinicLookup, clinicId, 0.15);
+    const wVisit = 0.12;
+    const wEmergency = 0.10;
+    const wTimeSlot = 0.08;
+    const wDayOfWeek = 0.10;
+
+    // Normalize weights so they sum to 1.0 (Softmax principle)
+    const totalWeight = wProblem + wDoctor + wClinic + wVisit + wEmergency + wTimeSlot + wDayOfWeek;
+
     const problemServiceTime = problemLookup[problem] || baseServiceTime;
     const doctorServiceTime = doctorLookup[doctorId] || baseServiceTime;
     const clinicServiceTime = clinicLookup[clinicId] || baseServiceTime;
     const visitTypeServiceTime = visitTypeLookup[visitType] || baseServiceTime;
     const emergencyServiceTime = emergencyLookup[emergencyKey] || baseServiceTime;
     const timeSlotServiceTime = timeSlotLookup[timeSlot] || baseServiceTime;
+    const dayOfWeekServiceTime = dayOfWeekLookup[dayOfWeek] || baseServiceTime;
 
     let prediction = (
-        (problemServiceTime * 0.30) +
-        (doctorServiceTime * 0.22) +
-        (clinicServiceTime * 0.18) +
-        (visitTypeServiceTime * 0.12) +
-        (emergencyServiceTime * 0.10) +
-        (timeSlotServiceTime * 0.08)
+        (problemServiceTime * (wProblem / totalWeight)) +
+        (doctorServiceTime * (wDoctor / totalWeight)) +
+        (clinicServiceTime * (wClinic / totalWeight)) +
+        (visitTypeServiceTime * (wVisit / totalWeight)) +
+        (emergencyServiceTime * (wEmergency / totalWeight)) +
+        (timeSlotServiceTime * (wTimeSlot / totalWeight)) +
+        (dayOfWeekServiceTime * (wDayOfWeek / totalWeight))
     );
 
     if (visitType === 'followup') {
@@ -414,14 +472,30 @@ function calculatePrediction(userData: AppointmentInput, peopleAhead = 0): numbe
         prediction *= 0.55;
     }
 
-    if (timeMin < 540 || timeMin > 1020) {
+    if (timeMin < 540) {
         prediction *= 1.08;
+    }
+
+    // "ghani var time over thay gaya pachi speed karta hoy"
+    // If it is late in the day (after 7 PM), doctors speed up to finish the queue
+    const currentHour = new Date().getHours();
+    if (currentHour >= 21) {
+        prediction *= 0.65; // 35% faster after 9 PM
+    } else if (currentHour >= 19) {
+        prediction *= 0.75; // 25% faster after 7 PM
+    } else if (currentHour >= 18) {
+        prediction *= 0.85; // 15% faster after 6 PM
     }
 
     // Scale prediction by 1.5x for patients referred to the lab
     if (userData.currentStage === 'Lab-Pending' || userData.currentStage === 'Lab-Processing') {
         prediction *= 1.5;
     }
+
+    // Deep Learning Concept: Non-linear Activation (Soft Bounding)
+    // Prevents extreme outliers (e.g. 500+ mins) by flattening the curve at the top
+    const MAX_ALLOWED_TIME = 120; // Cap single consultation baseline prediction at 120 mins
+    prediction = MAX_ALLOWED_TIME * (1 - Math.exp(-prediction / (MAX_ALLOWED_TIME * 0.6)));
 
     prediction += Math.max(peopleAhead, 0) * Math.max(baseServiceTime, 8);
     prediction += Math.max(tokenNo - 1, 0) * 1.25;
@@ -502,7 +576,7 @@ export async function estimateWaitTimeFromDb(context: WaitTimeContext): Promise<
             });
 
             // Find context patient in the sorted list
-            const contextIndex = sortedQueue.findIndex((entry) => 
+            const contextIndex = sortedQueue.findIndex((entry) =>
                 (context.tokenNumber && String(entry.tokenNumber) === String(context.tokenNumber)) ||
                 (context.queueId && String(entry._id) === String(context.queueId))
             );
@@ -556,18 +630,24 @@ export function updatePredictorWithData(appointmentData: {
     const visitType = normalizeVisitType(appointmentData.visit_type || appointmentData.diagnosis || appointmentData.notes || appointmentData.problem || 'walk-in');
     const emergencyKey = cleanBasic(appointmentData.emergency ?? 'normal');
     const timeSlot = getTimeSlotKey(appointmentData.time ?? '09:00');
+    
+    const recordDate = new Date(appointmentData.time as string | Date || Date.now());
+    const dayOfWeek = recordDate.getDay().toString();
 
-    addSample(problemBuckets, problem, duration);
-    addSample(doctorBuckets, doctorId, duration);
-    addSample(clinicBuckets, clinicId, duration);
-    addSample(visitTypeBuckets, visitType, duration);
-    addSample(emergencyBuckets, emergencyKey, duration);
-    addSample(timeSlotBuckets, timeSlot, duration);
+    addSample(problemBuckets, problem, duration, true);
+    addSample(doctorBuckets, doctorId, duration, true);
+    addSample(clinicBuckets, clinicId, duration, true);
+    addSample(visitTypeBuckets, visitType, duration, true);
+    addSample(emergencyBuckets, emergencyKey, duration, true);
+    addSample(timeSlotBuckets, timeSlot, duration, true);
+    addSample(dayOfWeekBuckets, dayOfWeek, duration, true);
 
+    // Update global mean with EMA for global recency bias
+    const globalAlpha = 0.1;
     totalSamples += 1;
     globalMeanServiceTime = totalSamples === 1
         ? duration
-        : ((globalMeanServiceTime * (totalSamples - 1)) + duration) / totalSamples;
+        : (globalAlpha * duration) + ((1 - globalAlpha) * globalMeanServiceTime);
 
     rebuildDerivedLookups();
     modelReady = true;

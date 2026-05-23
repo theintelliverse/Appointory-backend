@@ -14,7 +14,14 @@ const clinicSchema = mongoose.Schema({
     type: [String],
     default: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
   },
-  isActive: { type: Boolean, default: true }
+  isActive: { type: Boolean, default: true },
+  
+  // Billing & Queue Rules Config
+  feeConsult: { type: Number, default: 500 },
+  feeLab: { type: Number, default: 450 },
+  feeEmergency: { type: Number, default: 300 },
+  feeMedicine: { type: Number, default: 120 },
+  avgWaitFactor: { type: Number, default: 8 }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Clinic', clinicSchema);

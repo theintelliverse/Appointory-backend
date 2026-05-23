@@ -16,9 +16,15 @@ exports.getClinicProfile = async (req, res) => {
             });
         }
 
+        const InventoryItem = require('../models/InventoryItem');
+        const inventory = await InventoryItem.find({ clinicId: req.user.clinicId });
+
         res.status(200).json({
             success: true,
-            data: clinic
+            data: {
+                ...clinic.toObject(),
+                inventory
+            }
         });
     } catch (error) {
         res.status(500).json({
@@ -46,7 +52,12 @@ exports.updateClinicSettings = async (req, res) => {
             breakStartTime,
             breakEndTime,
             slotDurationMinutes,
-            workingDays
+            workingDays,
+            feeConsult,
+            feeLab,
+            feeEmergency,
+            feeMedicine,
+            avgWaitFactor
         } = req.body;
         const clinicId = req.user.clinicId;
 
@@ -77,7 +88,12 @@ exports.updateClinicSettings = async (req, res) => {
                 breakStartTime,
                 breakEndTime,
                 slotDurationMinutes,
-                workingDays
+                workingDays,
+                ...(feeConsult !== undefined && { feeConsult }),
+                ...(feeLab !== undefined && { feeLab }),
+                ...(feeEmergency !== undefined && { feeEmergency }),
+                ...(feeMedicine !== undefined && { feeMedicine }),
+                ...(avgWaitFactor !== undefined && { avgWaitFactor })
             },
             { new: true, runValidators: true }
         );
@@ -123,6 +139,52 @@ exports.deactivateClinic = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Manage Pharmacy Inventory for the Clinic
+ * @route   PATCH /api/clinic/inventory
+ * @access  Private (Admin)
+ */
+exports.updateInventory = async (req, res) => {
+    try {
+        const InventoryItem = require('../models/InventoryItem');
+        const clinicId = req.user.clinicId;
+        const { inventory } = req.body;
+
+        if (!Array.isArray(inventory)) {
+            return res.status(400).json({ success: false, message: "Inventory must be an array" });
+        }
+
+        // Delete existing inventory for the clinic
+        await InventoryItem.deleteMany({ clinicId });
+
+        // Insert new inventory items
+        const inventoryToInsert = inventory.map(item => ({
+            clinicId,
+            name: item.name,
+            stock: item.stock || 0,
+            minStock: item.minStock || 0,
+            unitPrice: item.unitPrice || 0
+        }));
+
+        let newInventory = [];
+        if (inventoryToInsert.length > 0) {
+            newInventory = await InventoryItem.insertMany(inventoryToInsert);
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Inventory updated successfully",
+            data: newInventory
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
     }
 };
 

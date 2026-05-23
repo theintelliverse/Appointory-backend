@@ -30,6 +30,13 @@ router.get('/me', protect, authorize('admin', 'lab'), clinicController.getClinic
 router.patch('/settings', protect, authorize('admin', 'lab'), clinicController.updateClinicSettings);
 
 /**
+ * @route   PATCH /api/clinic/inventory
+ * @desc    Update Pharmacy Inventory for the Clinic
+ * @access  Private (Admin)
+ */
+router.patch('/inventory', protect, authorize('admin', 'lab'), clinicController.updateInventory);
+
+/**
  * @route   DELETE /api/clinic/deactivate
  * @desc    Request clinic deactivation (Danger Zone)
  * @access  Private (Admin)

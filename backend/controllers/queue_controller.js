@@ -58,7 +58,7 @@ exports.addToQueue = async (req, res) => {
         const trackingUrl = `${getFrontendUrl()}/patient/status?id=${newEntry._id}`;
         const smsMsg = `✅ Token: ${tokenNumber} | Track your live queue status here: ${trackingUrl} - Appointory`;
         if (patientPhone) {
-            sendTwilioAlert(patientPhone, smsMsg).catch(() => {});
+            sendTwilioAlert(patientPhone, smsMsg).catch(() => { });
         }
 
         // 📢 DEBUG LOG
@@ -85,6 +85,9 @@ exports.selfCheckIn = async (req, res) => {
             status: 'Pending-Approval',
             isApproved: false
         });
+
+        // 📢 DEBUG LOG: Emit so Admin Dashboard instantly sees the new walk-in request
+        if (req.io) req.io.to(clinic._id.toString()).emit('queueUpdate');
 
         res.status(201).json({
             success: true,
@@ -630,22 +633,50 @@ exports.getPublicDoctorQueue = async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
         const queue = await Queue.find({
             doctorId: doctorId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] },
-            createdAt: { $gte: today }
+            currentStage: { $nin: ['Lab-Pending', 'Lab-Processing'] },
+            $or: [
+                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
+                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+            ]
         })
-            .select('tokenNumber patientName status isEmergency createdAt')
+            .select('tokenNumber patientName status isEmergency createdAt clinicId doctorId visitType reason diagnosis consultationNotes appointmentDate currentStage')
             .sort({
                 status: 1,      // 'In-Consultation' first
                 isEmergency: -1, // Emergency second
                 createdAt: 1     // Oldest first
             });
 
+        const queueWithWait = await Promise.all(queue.map(async (item) => {
+            const itemObj = item.toObject ? item.toObject() : item;
+            try {
+                const doctorObjectId = item.doctorId?._id || item.doctorId;
+                const waitTime = await estimateWaitTimeFromDb({
+                    clinicId: item.clinicId,
+                    doctorId: doctorObjectId,
+                    visitType: item.visitType,
+                    problem: item.reason || item.diagnosis || item.consultationNotes,
+                    isEmergency: !!item.isEmergency,
+                    tokenNumber: item.tokenNumber,
+                    queueId: item._id,
+                    appointmentDate: item.appointmentDate || item.createdAt
+                });
+                itemObj.estimatedWait = waitTime;
+            } catch (err) {
+                itemObj.estimatedWait = 15;
+            }
+            return itemObj;
+        }));
+
         res.status(200).json({
             success: true,
-            data: queue
+            data: queueWithWait
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
