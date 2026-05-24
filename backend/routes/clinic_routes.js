@@ -7,6 +7,7 @@ const { protect, authorize } = require('../utils/auth_middleware');
  * PUBLIC ROUTES (No Authentication Required)
  */
 router.get('/public/list', clinicController.getAllClinics);
+router.get('/public/queues-live', clinicController.getAllClinicsQueues);
 router.get('/public/doctors/:clinicId', clinicController.getClinicDoctors);
 router.get('/public/booked-slots/:clinicId/:doctorId', clinicController.getBookedSlots);
 
