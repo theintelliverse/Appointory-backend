@@ -30,8 +30,13 @@ function safeStringifyId(value) {
     if (typeof value === 'string') {
         return value.trim();
     }
-    if (typeof value === 'object' && value !== null && '_id' in value) {
-        return safeStringifyId(value._id);
+    if (typeof value === 'object' && value !== null) {
+        if (typeof value.toString === 'function' && /ObjectId|ObjectID/.test(value.constructor?.name || '')) {
+            return value.toString();
+        }
+        if ('_id' in value && value._id !== value) {
+            return safeStringifyId(value._id);
+        }
     }
     return String(value).trim();
 }

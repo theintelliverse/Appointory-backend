@@ -106,8 +106,13 @@ function safeStringifyId(value: unknown): string {
         return value.trim();
     }
 
-    if (typeof value === 'object' && value !== null && '_id' in value) {
-        return safeStringifyId((value as { _id?: unknown })._id);
+    if (typeof value === 'object' && value !== null) {
+        if (typeof (value as any).toString === 'function' && /ObjectId|ObjectID/.test((value as any).constructor?.name || '')) {
+            return (value as any).toString();
+        }
+        if ('_id' in value && (value as any)._id !== value) {
+            return safeStringifyId((value as { _id?: unknown })._id);
+        }
     }
 
     return String(value).trim();
