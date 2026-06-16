@@ -47,23 +47,23 @@ const debugLabUpload = (req, res, next) => {
  * @route   POST /api/staff/lab/upload/:patientPhone/:queueId
  */
 router.post(
-    '/lab/upload/:patientPhone/:queueId', 
-    authorize('lab', 'admin'), 
+    '/lab/upload/:patientPhone/:queueId',
+    authorize('lab', 'admin'),
     upload.single('file'), // 🔑 Field name MUST be 'file' in LabDashboard.jsx
     (req, res, next) => {
         // --- 🔍 Middleware Debugging ---
         console.log("-----------------------------------------");
         console.log(`📡 HIT: Lab Upload Route`);
         console.log(`📱 Params:`, req.params);
-        
+
         if (!req.file) {
             console.error("❌ MULTER FAILED: req.file is undefined.");
-            return res.status(400).json({ 
-                success: false, 
-                message: "Upload failed: No file received or unsupported format." 
+            return res.status(400).json({
+                success: false,
+                message: "Upload failed: No file received or unsupported format."
             });
         }
-        
+
         console.log("📄 CLOUDINARY SUCCESS: URL ->", req.file.path);
         next(); // Hands over to labController.uploadLabReport
     },
@@ -73,17 +73,24 @@ router.post(
 
 
 router.get(
-    '/admin/preview-data', 
-    protect, 
-    authorize('admin'), 
+    '/admin/preview-data',
+    protect,
+    authorize('admin'),
     adminController.getClinicDataPreview
 );
 
 // Feature: Clinical CSV Report Download
 router.get(
-    '/admin/reports/download', 
-    protect, 
-    authorize('admin'), 
+    '/admin/reports/download',
+    protect,
+    authorize('admin'),
     adminController.downloadClinicReport
 );
+
+// --- 📁 CLINICAL TEMPLATES ---
+router.get('/templates', authorize('doctor', 'admin'), staffController.getClinicalTemplates);
+router.post('/templates', authorize('doctor', 'admin'), staffController.createClinicalTemplate);
+router.put('/templates/:templateId', authorize('doctor', 'admin'), staffController.updateClinicalTemplate);
+router.delete('/templates/:templateId', authorize('doctor', 'admin'), staffController.deleteClinicalTemplate);
+
 module.exports = router;

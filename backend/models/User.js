@@ -23,6 +23,14 @@ const userSchema = mongoose.Schema({
   education: { type: String },
   isActive: { type: Boolean, default: true }, // 🔑 Add this
   deletedAt: { type: Date, default: null },
+  templates: [
+    {
+      name: { type: String, required: true },
+      drugs: { type: String, required: true },
+      instruction: { type: String },
+      category: { type: String, default: 'General' }
+    }
+  ],
 
   // Password Reset
   resetToken: { type: String, default: null },

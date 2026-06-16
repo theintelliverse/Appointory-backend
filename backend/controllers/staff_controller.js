@@ -151,11 +151,11 @@ exports.getPublicDoctors = async (req, res) => {
             };
         }));
 
-        res.status(200).json({ 
-            success: true, 
-            clinicName: clinic.name, 
+        res.status(200).json({
+            success: true,
+            clinicName: clinic.name,
             clinicId: clinic._id,
-            doctors: doctorsWithQueue 
+            doctors: doctorsWithQueue
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -403,6 +403,100 @@ exports.createPrescription = async (req, res) => {
             success: true,
             message: "Prescription issued successfully!",
             data: resObj
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 📁 GET CLINICAL TEMPLATES ---
+exports.getClinicalTemplates = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('templates');
+        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
+        res.status(200).json({
+            success: true,
+            data: user.templates || []
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 📁 CREATE CLINICAL TEMPLATE ---
+exports.createClinicalTemplate = async (req, res) => {
+    try {
+        const { name, drugs, instruction, category } = req.body;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
+
+        const newTemplate = {
+            name,
+            drugs,
+            instruction,
+            category: category || 'General'
+        };
+
+        user.templates = user.templates || [];
+        user.templates.push(newTemplate);
+        await user.save();
+
+        const addedTemplate = user.templates[user.templates.length - 1];
+
+        res.status(201).json({
+            success: true,
+            message: "Template created successfully",
+            data: addedTemplate
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 📁 UPDATE CLINICAL TEMPLATE ---
+exports.updateClinicalTemplate = async (req, res) => {
+    try {
+        const { templateId } = req.params;
+        const { name, drugs, instruction, category } = req.body;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
+
+        let template = user.templates.id(templateId);
+        if (!template) {
+            template = user.templates.find(t => t._id && t._id.toString() === templateId);
+        }
+        if (!template) return res.status(404).json({ success: false, message: "Template not found" });
+
+        if (name) template.name = name;
+        if (drugs) template.drugs = drugs;
+        if (instruction !== undefined) template.instruction = instruction;
+        if (category) template.category = category;
+
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: "Template updated successfully",
+            data: template
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 📁 DELETE CLINICAL TEMPLATE ---
+exports.deleteClinicalTemplate = async (req, res) => {
+    try {
+        const { templateId } = req.params;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
+
+        user.templates = user.templates.filter(t => t._id && t._id.toString() !== templateId);
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: "Template deleted successfully"
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
