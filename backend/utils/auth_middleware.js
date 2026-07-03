@@ -47,4 +47,30 @@ const protectPatient = async (req, res, next) => {
     }
 };
 
-module.exports = { protect, authorize, protectPatient };
+// ============================================================
+// 🔬 PROTECT INDEPENDENT LAB ROUTES
+// Verifies JWT and checks role === 'independent_lab'
+// ============================================================
+const protectLab = (req, res, next) => {
+    let token = req.headers.authorization;
+
+    if (token && token.startsWith('Bearer')) {
+        try {
+            token = token.split(' ')[1];
+            const decoded = jwt.verify(token, JWT_SECRET);
+
+            if (decoded.role !== 'independent_lab') {
+                return res.status(403).json({ message: 'Access denied. Independent lab token required.' });
+            }
+
+            req.lab = decoded; // { id, role: 'independent_lab' }
+            next();
+        } catch (error) {
+            res.status(401).json({ message: 'Not authorized, token failed' });
+        }
+    } else {
+        res.status(401).json({ message: 'No token, authorization denied' });
+    }
+};
+
+module.exports = { protect, authorize, protectPatient, protectLab };

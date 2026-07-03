@@ -151,11 +151,11 @@ exports.getPublicDoctors = async (req, res) => {
             };
         }));
 
-        res.status(200).json({
-            success: true,
-            clinicName: clinic.name,
+        res.status(200).json({ 
+            success: true, 
+            clinicName: clinic.name, 
             clinicId: clinic._id,
-            doctors: doctorsWithQueue
+            doctors: doctorsWithQueue 
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -429,20 +429,20 @@ exports.createClinicalTemplate = async (req, res) => {
         const { name, drugs, instruction, category } = req.body;
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-
+        
         const newTemplate = {
             name,
             drugs,
             instruction,
             category: category || 'General'
         };
-
+        
         user.templates = user.templates || [];
         user.templates.push(newTemplate);
         await user.save();
-
+        
         const addedTemplate = user.templates[user.templates.length - 1];
-
+        
         res.status(201).json({
             success: true,
             message: "Template created successfully",
@@ -460,20 +460,20 @@ exports.updateClinicalTemplate = async (req, res) => {
         const { name, drugs, instruction, category } = req.body;
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-
+        
         let template = user.templates.id(templateId);
         if (!template) {
             template = user.templates.find(t => t._id && t._id.toString() === templateId);
         }
         if (!template) return res.status(404).json({ success: false, message: "Template not found" });
-
+        
         if (name) template.name = name;
         if (drugs) template.drugs = drugs;
         if (instruction !== undefined) template.instruction = instruction;
         if (category) template.category = category;
-
+        
         await user.save();
-
+        
         res.status(200).json({
             success: true,
             message: "Template updated successfully",
@@ -490,10 +490,10 @@ exports.deleteClinicalTemplate = async (req, res) => {
         const { templateId } = req.params;
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-
+        
         user.templates = user.templates.filter(t => t._id && t._id.toString() !== templateId);
         await user.save();
-
+        
         res.status(200).json({
             success: true,
             message: "Template deleted successfully"

@@ -3,7 +3,8 @@ const router = express.Router();
 const authController = require('../controllers/auth_controller');
 const patientController = require('../controllers/patient_auth_controller');
 const { getPatientProfile } = require('../controllers/patient_profile_controller');
-const { protect, protectPatient } = require('../utils/auth_middleware');
+const { protect, protectPatient, protectLab } = require('../utils/auth_middleware');
+const labAuthController = require('../controllers/independent_lab_controller');
 
 /**
  * 🏥 CLINIC & STAFF AUTH (PUBLIC)
@@ -46,4 +47,18 @@ router.post('/patient/book-appointment', protectPatient, patientController.bookA
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
-module.exports = router;
+/**
+ * 🔬 INDEPENDENT LAB AUTH (PUBLIC)
+ */
+router.post('/lab/register', labAuthController.registerLab);
+router.post('/lab/login', labAuthController.loginLab);
+router.post('/lab/forgot-password', labAuthController.labForgotPassword);
+router.post('/lab/reset-password', labAuthController.labResetPassword);
+
+/**
+ * 🔬 INDEPENDENT LAB PROFILE (PROTECTED — Lab Token)
+ */
+router.get('/lab/me', protectLab, labAuthController.getLabMe);
+router.patch('/lab/update-profile', protectLab, labAuthController.updateLabProfile);
+
+module.exports = router;
