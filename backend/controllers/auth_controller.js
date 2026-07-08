@@ -106,11 +106,11 @@ exports.getMe = async (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
     try {
-        const { name, bio, education, experience, phoneNumber, profileImage } = req.body;
+        const { name, bio, education, experience, phoneNumber, profileImage, clinicLocation, clinicContact } = req.body;
 
         const updatedUser = await User.findByIdAndUpdate(
             req.user.id,
-            { name, bio, education, experience, phoneNumber, profileImage },
+            { name, bio, education, experience, phoneNumber, profileImage, clinicLocation, clinicContact },
             { new: true, runValidators: true }
         ).select('-password');
 

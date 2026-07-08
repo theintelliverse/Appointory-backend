@@ -53,7 +53,7 @@ router.use(protect);
 // Receptionist sees the list of OTP-verified requests
 router.get('/pending', authorize('receptionist', 'admin'), getPendingRequests);
 // Receptionist approves and assigns a Token Number
-router.patch('/approve/:id', authorize('receptionist', 'admin'), approvePatient);
+router.patch('/approve/:id', authorize('receptionist', 'admin', 'doctor'), approvePatient);
 
 // --- 👥 STANDARD QUEUE MGMT ---
 router.post('/add', authorize('receptionist', 'admin'), addToQueue);

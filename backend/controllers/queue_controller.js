@@ -497,40 +497,49 @@ exports.getPatientStatus = async (req, res) => {
         }
 
         const doctorObjectId = entry.doctorId?._id || entry.doctorId;
-
         const clinicObjectId = entry.clinicId?._id || entry.clinicId;
 
-        // Only count TODAY's queue (old stale entries from past days must not count)
+        // Determine the target date of the appointment
+        const entryDate = entry.appointmentDate || entry.createdAt || new Date();
+        const entryDateStart = new Date(entryDate);
+        entryDateStart.setHours(0, 0, 0, 0);
+
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
-        const todayEnd = new Date(todayStart);
-        todayEnd.setDate(todayEnd.getDate() + 1);
 
-        // Count people ACTUALLY ahead: same clinic, same doctor, today only
+        const isFutureDay = entryDateStart.getTime() > todayStart.getTime();
+        const isPastDay = entryDateStart.getTime() < todayStart.getTime();
+
+        // Calculate start and end of that specific target day
+        const targetDayStart = new Date(entryDateStart);
+        const targetDayEnd = new Date(targetDayStart);
+        targetDayEnd.setDate(targetDayEnd.getDate() + 1);
+
+        // Count people ahead on that specific day
         const aheadQuery = {
             _id: { $ne: entry._id },
             clinicId: clinicObjectId,
             doctorId: doctorObjectId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] },
-            createdAt: { $gte: todayStart, $lt: todayEnd },
             $or: [
-                // Walk-ins created before this patient
-                { visitType: { $ne: 'Appointment' }, createdAt: { $lt: entry.createdAt } },
-                // Appointments with earlier slot time
-                { visitType: 'Appointment', appointmentDate: { $lt: entry.appointmentDate || entry.createdAt } }
+                {
+                    visitType: { $ne: 'Appointment' },
+                    createdAt: { $gte: targetDayStart, $lt: targetDayEnd, $lt: entry.createdAt }
+                },
+                {
+                    visitType: 'Appointment',
+                    appointmentDate: { $gte: targetDayStart, $lt: targetDayEnd, $lt: entry.appointmentDate || entry.createdAt }
+                }
             ]
         };
 
         const peopleAhead = await Queue.countDocuments(aheadQuery);
 
-        // Debug: log to backend console so we can verify
-        console.log(`📊 PatientStatus [${entry.patientName}] → Ahead: ${peopleAhead} | Clinic: ${clinicObjectId} | Doctor: ${doctorObjectId} | Status: ${entry.status}`);
-
-        // Try AI predictor, fall back to simple 14-min-per-person formula
+        // Estimate queue delay (wait time relative to their slot/clinic opening)
         let estimatedWait;
         try {
-            const aiResult = await estimateWaitTimeFromDb({
+            estimatedWait = await estimateWaitTimeFromDb({
                 clinicId: entry.clinicId,
                 doctorId: doctorObjectId,
                 visitType: entry.visitType,
@@ -539,13 +548,70 @@ exports.getPatientStatus = async (req, res) => {
                 tokenNumber: entry.tokenNumber,
                 peopleAhead
             });
-            // Validate: if NaN / falsy / too large, use fallback
-            estimatedWait = (typeof aiResult === 'number' && !isNaN(aiResult) && aiResult > 0 && aiResult < 300)
-                ? aiResult
-                : Math.max(peopleAhead * 14, 5);
         } catch {
             estimatedWait = Math.max(peopleAhead * 14, 5);
         }
+
+        // Get Clinic Opening Time
+        const openingTimeStr = entry.clinicId?.openingTime || '09:00';
+        const [openHours, openMins] = openingTimeStr.split(':').map(Number);
+        
+        // Define when the clinic opens on that day
+        const clinicOpenDate = new Date(entryDateStart);
+        clinicOpenDate.setHours(openHours || 9, openMins || 0, 0, 0);
+
+        // Base time to start queue on that day
+        let baseTimeDate = new Date(clinicOpenDate);
+        if (entry.visitType === 'Appointment' && entry.appointmentDate) {
+            baseTimeDate = new Date(entry.appointmentDate);
+        } else {
+            const checkInTime = new Date(entry.createdAt);
+            if (checkInTime > clinicOpenDate) {
+                baseTimeDate = checkInTime;
+            }
+        }
+
+        // Predicted turn time is baseTimeDate + estimatedWait minutes
+        const predictedTurnDate = new Date(baseTimeDate.getTime() + estimatedWait * 60000);
+
+        // Calculate display minutes
+        let displayWaitMinutes = estimatedWait;
+        if (!isFutureDay) {
+            // For today, if clinic hasn't opened yet, wait time includes the time from now until clinic opens
+            const now = new Date();
+            if (now < clinicOpenDate) {
+                const diffMs = predictedTurnDate.getTime() - now.getTime();
+                displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+            } else {
+                // Clinic is open, wait time is relative to now
+                const diffMs = predictedTurnDate.getTime() - now.getTime();
+                displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+            }
+        }
+
+        // Helper to format predicted turn time nicely
+        const formatTurnTime = (date) => {
+            const target = new Date(date);
+            const targetStart = new Date(target);
+            targetStart.setHours(0, 0, 0, 0);
+            
+            const timeStr = target.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+            
+            if (targetStart.getTime() === todayStart.getTime()) {
+                return `Today at ${timeStr}`;
+            } else {
+                const tomorrowStart = new Date(todayStart);
+                tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+                if (targetStart.getTime() === tomorrowStart.getTime()) {
+                    return `Tomorrow at ${timeStr}`;
+                } else {
+                    const options = { day: 'numeric', month: 'short' };
+                    return `${target.toLocaleDateString('en-US', options)} at ${timeStr}`;
+                }
+            }
+        };
+
+        const predictedTurnTimeStr = formatTurnTime(predictedTurnDate);
 
         res.status(200).json({
             success: true,
@@ -558,7 +624,9 @@ exports.getPatientStatus = async (req, res) => {
                 closingTime: entry.clinicId?.closingTime || '17:00',
                 isEmergency: entry.isEmergency,
                 peopleAhead,
-                estimatedWait,
+                estimatedWait: displayWaitMinutes,
+                predictedTurnTime: predictedTurnTimeStr,
+                isFutureDay,
                 isDoctorOnBreak: !(entry.doctorId && entry.doctorId.isAvailable)
             }
         });
@@ -646,6 +714,7 @@ exports.getPublicDoctorQueue = async (req, res) => {
                 { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
             ]
         })
+            .populate('clinicId', 'name openingTime closingTime')
             .select('tokenNumber patientName status isEmergency createdAt clinicId doctorId visitType reason diagnosis consultationNotes appointmentDate currentStage')
             .sort({
                 status: 1,      // 'In-Consultation' first
@@ -653,21 +722,62 @@ exports.getPublicDoctorQueue = async (req, res) => {
                 createdAt: 1     // Oldest first
             });
 
-        const queueWithWait = await Promise.all(queue.map(async (item) => {
+        const queueWithWait = await Promise.all(queue.map(async (item, index) => {
             const itemObj = item.toObject ? item.toObject() : item;
             try {
                 const doctorObjectId = item.doctorId?._id || item.doctorId;
-                const waitTime = await estimateWaitTimeFromDb({
-                    clinicId: item.clinicId,
-                    doctorId: doctorObjectId,
-                    visitType: item.visitType,
-                    problem: item.reason || item.diagnosis || item.consultationNotes,
-                    isEmergency: !!item.isEmergency,
-                    tokenNumber: item.tokenNumber,
-                    queueId: item._id,
-                    appointmentDate: item.appointmentDate || item.createdAt
-                });
-                itemObj.estimatedWait = waitTime;
+                
+                // Count people ahead in this sorted list
+                const peopleAhead = index;
+
+                let estimatedWait;
+                try {
+                    estimatedWait = await estimateWaitTimeFromDb({
+                        clinicId: item.clinicId?._id || item.clinicId,
+                        doctorId: doctorObjectId,
+                        visitType: item.visitType,
+                        problem: item.reason || item.diagnosis || item.consultationNotes,
+                        isEmergency: !!item.isEmergency,
+                        tokenNumber: item.tokenNumber,
+                        peopleAhead
+                    });
+                } catch {
+                    estimatedWait = Math.max(peopleAhead * 14, 5);
+                }
+
+                // Get Clinic Opening Time
+                const openingTimeStr = item.clinicId?.openingTime || '09:00';
+                const [openHours, openMins] = openingTimeStr.split(':').map(Number);
+                
+                // Today's opening time
+                const entryDate = item.appointmentDate || item.createdAt || new Date();
+                const entryDateStart = new Date(entryDate);
+                entryDateStart.setHours(0, 0, 0, 0);
+
+                const clinicOpenDate = new Date(entryDateStart);
+                clinicOpenDate.setHours(openHours || 9, openMins || 0, 0, 0);
+
+                // Base time
+                let baseTimeDate = new Date(clinicOpenDate);
+                if (item.visitType === 'Appointment' && item.appointmentDate) {
+                    baseTimeDate = new Date(item.appointmentDate);
+                } else {
+                    const checkInTime = new Date(item.createdAt);
+                    if (checkInTime > clinicOpenDate) {
+                        baseTimeDate = checkInTime;
+                    }
+                }
+
+                // Predicted turn time is baseTimeDate + estimatedWait minutes
+                const predictedTurnDate = new Date(baseTimeDate.getTime() + estimatedWait * 60000);
+
+                // Calculate display minutes
+                const now = new Date();
+                const diffMs = predictedTurnDate.getTime() - now.getTime();
+                const displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+
+                itemObj.estimatedWait = displayWaitMinutes;
+                itemObj.predictedTurnTime = predictedTurnDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
             } catch (err) {
                 itemObj.estimatedWait = 15;
             }
@@ -888,13 +998,15 @@ exports.getDoctorDashboardStats = async (req, res) => {
             status: 'Waiting'
         });
 
-        // 4. Queue Data for tabs — walk-ins by createdAt (must be approved), appointments by appointmentDate (approved or pending)
+        // 4. Queue Data for tabs — walk-ins by createdAt, appointments by appointmentDate, or pending check-ins
         const queueData = await Queue.find({
             clinicId,
             doctorId,
             $or: [
-                { visitType: { $ne: 'Appointment' }, isApproved: true, createdAt: { $gte: today, $lt: tomorrow } },
-                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
+                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } },
+                { status: 'Pending-Approval' },
+                { isApproved: false }
             ]
         }).sort({ isEmergency: -1, appointmentDate: 1, createdAt: 1 });
 

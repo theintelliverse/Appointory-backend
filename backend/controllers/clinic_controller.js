@@ -245,7 +245,7 @@ exports.getClinicDoctors = async (req, res) => {
             clinicId,
             role: 'doctor',
             isActive: true
-        }).select('_id name specialization isAvailable experience education');
+        }).select('_id name specialization isAvailable experience education bio profileImage clinicLocation clinicContact phoneNumber');
 
         console.log(`✅ Found ${doctors.length} doctors for clinic ${clinicId}`);
 

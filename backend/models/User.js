@@ -21,6 +21,9 @@ const userSchema = mongoose.Schema({
   bio: { type: String },
   experience: { type: Number }, // years
   education: { type: String },
+  clinicLocation: { type: String, default: "" },
+  clinicContact: { type: String, default: "" },
+  phoneNumber: { type: String, default: "" },
   isActive: { type: Boolean, default: true }, // 🔑 Add this
   deletedAt: { type: Date, default: null },
   templates: [
