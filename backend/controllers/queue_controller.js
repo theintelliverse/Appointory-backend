@@ -1,8 +1,10 @@
+
 const Queue = require('../models/Queue');
 const Clinic = require('../models/Clinic');
 const MedicalRecord = require('../models/MedicalRecord');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
+const PrivateNote = require('../models/PrivateNote');
 const {
     estimateWaitTimeFromDb,
     updatePredictorWithData
@@ -1060,3 +1062,57 @@ exports.getDoctorDashboardStats = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// --- 🔒 DOCTOR'S PRIVATE NOTES ---
+exports.savePrivateNote = async (req, res) => {
+    try {
+        const { patientPhone, note } = req.body;
+        const doctorId = req.user.id || req.user._id;
+
+        if (!patientPhone) {
+            return res.status(400).json({ success: false, message: "Patient phone is required" });
+        }
+
+        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+
+        const newNote = await PrivateNote.create({
+            patientPhone: cleanPhone,
+            doctorId,
+            note: note || ""
+        });
+
+        res.status(201).json({
+            success: true,
+            message: "Private note stored successfully!",
+            data: newNote
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getPrivateNotes = async (req, res) => {
+    try {
+        const { phone } = req.params;
+        const doctorId = req.user.id || req.user._id;
+
+        if (!phone) {
+            return res.status(400).json({ success: false, message: "Patient phone is required" });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        const notes = await PrivateNote.find({
+            patientPhone: cleanPhone,
+            doctorId
+        }).sort({ createdAt: -1 });
+
+        res.status(200).json({
+            success: true,
+            data: notes
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+

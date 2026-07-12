@@ -24,7 +24,9 @@ const {
     createTestRequest,
     updateQueueStage,
     getDoctorDashboardStats,
-    getWaitEstimation
+    getWaitEstimation,
+    savePrivateNote,
+    getPrivateNotes
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -87,5 +89,9 @@ router.put('/:id', authorize('lab', 'admin'), updateQueueStage);
 
 // Medical History
 router.get('/history', authorize('admin', 'doctor'), getMedicalHistory);
+
+// 🔒 Doctor Private Notes
+router.post('/private-notes', authorize('doctor', 'admin'), savePrivateNote);
+router.get('/private-notes/:phone', authorize('doctor', 'admin'), getPrivateNotes);
 
 module.exports = router;
