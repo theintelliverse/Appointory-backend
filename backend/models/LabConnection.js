@@ -21,6 +21,11 @@ const labConnectionSchema = mongoose.Schema({
         enum: ['pending', 'accepted', 'rejected'],
         default: 'pending'
     },
+    initiatedBy: {
+        type: String,
+        enum: ['clinic', 'lab'],
+        default: 'clinic'
+    },
     requestedAt: { type: Date, default: Date.now },
     respondedAt: { type: Date, default: null }
 }, { timestamps: true });

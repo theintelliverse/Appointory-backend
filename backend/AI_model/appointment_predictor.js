@@ -1,9 +1,20 @@
+"use strict";
 /**
  * Appointment Wait Time Prediction Module
  * Database-backed predictor used by the Node backend.
  */
-import * as MedicalRecord from '../models/MedicalRecord.js';
-import * as QueueModel from '../models/Queue.js';
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.convertTimeToMin = convertTimeToMin;
+exports.predictSingleUser = predictSingleUser;
+exports.estimateWaitTimeFromDb = estimateWaitTimeFromDb;
+exports.updatePredictorWithData = updatePredictorWithData;
+exports.initializePredictor = initializePredictor;
+exports.getPredictorState = getPredictorState;
+const MedicalRecord_js_1 = __importDefault(require("../models/MedicalRecord.js"));
+const Queue_js_1 = __importDefault(require("../models/Queue.js"));
 let modelReady = false;
 let globalMeanServiceTime = 20;
 let lastTrainingTime = null;
@@ -59,7 +70,7 @@ function cleanBasic(value) {
     }
     return normalized;
 }
-export function convertTimeToMin(value) {
+function convertTimeToMin(value) {
     try {
         if (!value) {
             return 540;
@@ -197,12 +208,12 @@ async function loadHistoricalStats(options = {}) {
             query.doctorId = options.doctorId;
         }
         const [medicalRecords, queueRecords] = await Promise.all([
-            MedicalRecord.find(query)
+            MedicalRecord_js_1.default.find(query)
                 .sort({ visitDate: -1 })
                 .limit(options.limit || 500)
                 .select('clinicId doctorId diagnosis notes duration')
                 .lean(),
-            QueueModel.find({
+            Queue_js_1.default.find({
                 status: 'Completed'
             })
                 .sort({ endTime: -1, createdAt: -1 })
@@ -360,10 +371,10 @@ function calculatePrediction(userData, peopleAhead = 0) {
     prediction += Math.max(tokenNo - 1, 0) * 1.25;
     return Math.max(Math.round(prediction), 1);
 }
-export function predictSingleUser(userData) {
+function predictSingleUser(userData) {
     return calculatePrediction(userData, 0);
 }
-export async function estimateWaitTimeFromDb(context) {
+async function estimateWaitTimeFromDb(context) {
     if (!modelReady && !trainingInProgress) {
         await loadHistoricalStats({ limit: 2000 });
     }
@@ -402,7 +413,7 @@ export async function estimateWaitTimeFromDb(context) {
         if (context.doctorId) {
             queueQuery.doctorId = context.doctorId;
         }
-        const activeQueue = (await QueueModel.find(queueQuery)
+        const activeQueue = (await Queue_js_1.default.find(queueQuery)
             .select('createdAt appointmentDate isEmergency tokenNumber clinicId doctorId visitType reason diagnosis consultationNotes currentStage status')
             .lean());
         let targetTimeMin = null;
@@ -451,7 +462,7 @@ export async function estimateWaitTimeFromDb(context) {
         visit_type: context.visit_type || context.visitType || 'new'
     }, peopleAhead);
 }
-export function updatePredictorWithData(appointmentData) {
+function updatePredictorWithData(appointmentData) {
     const duration = normalizeServiceDuration(appointmentData.duration);
     if (!duration) {
         return;
@@ -481,10 +492,10 @@ export function updatePredictorWithData(appointmentData) {
     modelReady = true;
     lastTrainingTime = new Date();
 }
-export async function initializePredictor() {
+async function initializePredictor() {
     await loadHistoricalStats({ limit: 500 });
 }
-export function getPredictorState() {
+function getPredictorState() {
     return {
         hasModel: modelReady,
         globalMeanServiceTime,

@@ -4,8 +4,8 @@
  */
 
 
-import * as MedicalRecord from '../models/MedicalRecord.js';
-import * as QueueModel from '../models/Queue.js';
+import MedicalRecord from '../models/MedicalRecord.js';
+import QueueModel from '../models/Queue.js';
 
 export interface AppointmentInput {
     emergency?: string | boolean | number;

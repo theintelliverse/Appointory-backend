@@ -188,6 +188,10 @@ exports.sendTestRequest = async (req, res) => {
             queueId: queueId || null
         });
 
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('testRequestUpdate');
+        }
+
         res.status(201).json({ success: true, message: 'Test request sent to lab.', data: request });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -251,6 +255,11 @@ exports.updateRequestStatus = async (req, res) => {
         if (status === 'Completed') request.completedAt = Date.now();
         await request.save();
 
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('testRequestUpdate');
+            req.io.to(request.clinicId.toString()).emit('queueUpdate');
+        }
+
         res.status(200).json({ success: true, message: `Status updated to ${status}.`, data: request });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -292,6 +301,11 @@ exports.uploadReportForRequest = [
             request.completedAt = Date.now();
             await request.save();
 
+            if (req.io) {
+                req.io.to(`lab_${labId}`).emit('testRequestUpdate');
+                req.io.to(request.clinicId.toString()).emit('queueUpdate');
+            }
+
             res.status(200).json({
                 success: true,
                 message: `${files.length} report(s) uploaded and request marked Completed.`,
@@ -303,3 +317,182 @@ exports.uploadReportForRequest = [
         }
     }
 ];
+
+// =============================================
+// 📤 LAB CREATES TEST REQUEST (walk-in direct booking)
+// POST /api/lab-connect/test-requests/lab/create
+// Body: { clinicId, patientName, patientPhone, testName, notes }
+// =============================================
+exports.createLabTestRequest = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const { clinicId, patientName, patientPhone, testName, notes } = req.body;
+
+        if (!clinicId || !patientName || !patientPhone || !testName) {
+            return res.status(400).json({ success: false, message: 'clinicId, patientName, patientPhone, testName are required.' });
+        }
+
+        // Verify connection is active
+        const conn = await LabConnection.findOne({ clinicId, labId, status: 'accepted' });
+        if (!conn) {
+            return res.status(403).json({ success: false, message: 'You are not connected to this clinic.' });
+        }
+
+        const request = await ExternalLabRequest.create({
+            labId,
+            clinicId,
+            patientName,
+            patientPhone,
+            testName,
+            notes: notes || ''
+        });
+
+        // Emit socket events
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('testRequestUpdate');
+            req.io.to(clinicId.toString()).emit('queueUpdate');
+        }
+
+        res.status(201).json({ success: true, message: 'Walk-in test request created successfully.', data: request });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🌐 LAB PORTAL: GET ALL CLINICS WITH STATUS
+// GET /api/lab-connect/lab/clinics
+// =============================================
+exports.getClinicsForLab = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const Clinic = require('../models/Clinic');
+
+        // Fetch all active clinics
+        const clinics = await Clinic.find({ isActive: true }).select('name clinicCode address contactPhone');
+
+        // Fetch all connections for this lab
+        const connections = await LabConnection.find({ labId });
+
+        // Map status to each clinic
+        const clinicData = clinics.map(clinic => {
+            const conn = connections.find(c => c.clinicId.toString() === clinic._id.toString());
+            return {
+                ...clinic.toObject(),
+                connectionStatus: conn ? conn.status : 'none',
+                connectionId: conn ? conn._id : null,
+                initiatedBy: conn ? conn.initiatedBy : null
+            };
+        });
+
+        res.status(200).json({ success: true, data: clinicData });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 📨 LAB PORTAL: SEND CONNECTION REQUEST TO CLINIC
+// POST /api/lab-connect/lab/request
+// Body: { clinicId }
+// =============================================
+exports.sendLabRequestToClinic = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const { clinicId } = req.body;
+
+        if (!clinicId) return res.status(400).json({ success: false, message: 'clinicId is required.' });
+
+        const Clinic = require('../models/Clinic');
+        const clinic = await Clinic.findById(clinicId);
+        if (!clinic || !clinic.isActive) {
+            return res.status(404).json({ success: false, message: 'Clinic not found.' });
+        }
+
+        // Check if already connected or pending
+        const existing = await LabConnection.findOne({ clinicId, labId });
+        if (existing) {
+            if (existing.status === 'accepted') {
+                return res.status(400).json({ success: false, message: 'Already connected to this clinic.' });
+            }
+            if (existing.status === 'pending') {
+                return res.status(400).json({ success: false, message: 'Connection request already pending.' });
+            }
+            // If rejected, allow re-request
+            existing.status = 'pending';
+            existing.initiatedBy = 'lab';
+            existing.requestedAt = Date.now();
+            existing.respondedAt = null;
+            await existing.save();
+            return res.status(200).json({ success: true, message: 'Connection request re-sent.' });
+        }
+
+        const conn = await LabConnection.create({ clinicId, labId, initiatedBy: 'lab' });
+        res.status(201).json({ success: true, message: 'Connection request sent to clinic.', data: conn });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// ✅ CLINIC RESPONDS TO LAB CONNECTION (accept/reject)
+// PATCH /api/lab-connect/clinic/:id/respond
+// Body: { action: 'accept' | 'reject' }
+// =============================================
+exports.respondToConnectionByClinic = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const { id } = req.params;
+        const { action } = req.body;
+
+        if (!['accept', 'reject'].includes(action)) {
+            return res.status(400).json({ success: false, message: "action must be 'accept' or 'reject'." });
+        }
+
+        const conn = await LabConnection.findOne({ _id: id, clinicId });
+        if (!conn) return res.status(404).json({ success: false, message: 'Connection request not found.' });
+
+        if (conn.status !== 'pending') {
+            return res.status(400).json({ success: false, message: 'This request has already been responded to.' });
+        }
+
+        conn.status = action === 'accept' ? 'accepted' : 'rejected';
+        conn.respondedAt = Date.now();
+        await conn.save();
+
+        res.status(200).json({ success: true, message: `Connection ${conn.status}.` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 📋 CLINIC GETS ALL LABS WITH CONNECTION STATUS
+// GET /api/lab-connect/clinic/labs
+// =============================================
+exports.getAllLabsForClinic = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+
+        // Fetch all active labs
+        const labs = await IndependentLab.find({ isActive: true }).select('labName labCode address phone logo');
+
+        // Fetch all connections for this clinic
+        const connections = await LabConnection.find({ clinicId });
+
+        // Map status to each lab
+        const labData = labs.map(lab => {
+            const conn = connections.find(c => c.labId.toString() === lab._id.toString());
+            return {
+                ...lab.toObject(),
+                connectionStatus: conn ? conn.status : 'none',
+                connectionId: conn ? conn._id : null,
+                initiatedBy: conn ? conn.initiatedBy : null
+            };
+        });
+
+        res.status(200).json({ success: true, data: labData });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

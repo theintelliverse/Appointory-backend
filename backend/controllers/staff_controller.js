@@ -132,6 +132,8 @@ exports.getPublicDoctors = async (req, res) => {
         // Filter to show only today's patients
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
 
         const doctors = await User.find({
             clinicId: clinic._id,
@@ -139,11 +141,15 @@ exports.getPublicDoctors = async (req, res) => {
             isActive: { $ne: false }
         }).select('name specialization education experience _id isAvailable');
 
-        // Fetch Queue counts for each doctor (Active Only)
+        // Fetch Queue counts for each doctor (Active Only for Today)
         const doctorsWithQueue = await Promise.all(doctors.map(async (doc) => {
             const queueCount = await Queue.countDocuments({
                 doctorId: doc._id,
-                status: { $in: ['Waiting', 'In-Consultation'] }
+                status: { $in: ['Waiting', 'In-Consultation'] },
+                $or: [
+                    { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
+                    { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+                ]
             });
             return {
                 ...doc.toObject(),
