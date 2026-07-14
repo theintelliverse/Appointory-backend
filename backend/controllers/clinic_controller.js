@@ -197,6 +197,15 @@ exports.getAllClinics = async (req, res) => {
     try {
         console.log('📋 Fetching all active clinics...');
         
+        // Return 503 if the database is not connected yet
+        const mongoose = require('mongoose');
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({
+                success: false,
+                message: "Database connection is initializing. Please try again in a few seconds."
+            });
+        }
+
         const User = require('../models/User');
         
         const clinics = await Clinic.find({ isActive: true }).select('_id name address contactPhone clinicCode openingTime closingTime breakStartTime breakEndTime slotDurationMinutes workingDays');
@@ -335,6 +344,16 @@ exports.getBookedSlots = async (req, res) => {
 exports.getAllClinicsQueues = async (req, res) => {
     try {
         console.log('📋 Fetching live queues for all active landing page clinics...');
+        
+        // Return 503 if the database is not connected yet
+        const mongoose = require('mongoose');
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({
+                success: false,
+                message: "Database connection is initializing. Please try again in a few seconds."
+            });
+        }
+
         const Queue = require('../models/Queue');
         
         // Fetch clinics that are active and marked to show on the landing page (or not explicitly hidden)
