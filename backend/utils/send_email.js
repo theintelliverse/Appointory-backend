@@ -87,8 +87,143 @@ if (validateEmailConfig()) {
         // Don't crash the app, just log a warning
     });
 } else {
-    console.log('⚠️  Email service disabled: EMAIL_USER and EMAIL_PASS not configured');
+    console.log('⚠️  Email service disabled: EMAIL_USER and EMAIL_PASS');
 }
+const { decrypt } = require('./crypto_helper');
+
+// Helper to resolve transporter dynamically
+const getTransporterAndSender = async () => {
+    try {
+        const SystemConfig = require('../models/SystemConfig');
+        const config = await SystemConfig.findOne();
+        if (config && config.smtpUser && config.smtpPass) {
+            const decryptedPass = decrypt(config.smtpPass);
+            const activeTransporter = nodemailer.createTransport({
+                host: config.smtpHost || 'smtp.gmail.com',
+                port: config.smtpPort || 587,
+                secure: config.smtpSecure || false,
+                auth: {
+                    user: config.smtpUser,
+                    pass: decryptedPass,
+                },
+                tls: {
+                    rejectUnauthorized: false
+                },
+                connectionTimeout: 10000,
+                socketTimeout: 10000,
+            });
+            return { activeTransporter, senderUser: config.smtpUser };
+        }
+    } catch (err) {
+        console.error('Error fetching dynamic SMTP config, falling back:', err.message);
+    }
+    
+    return { activeTransporter: transporter, senderUser: process.env.EMAIL_USER || 'support@appointory.com' };
+};
+
+const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
+    try {
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        if (!activeTransporter) {
+            throw new Error('Email service is not initialized. Check SMTP configuration.');
+        }
+
+        const userHtml = `
+            <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 25px; background-color: #ffffff;">
+                <h2 style="color: #0F766E; margin-top: 0;">We've received your support request!</h2>
+                <p>Hello ${ticket.senderName},</p>
+                <p>Thank you for reaching out to Appointory Support. We have received your ticket and our superadmin team is investigating it.</p>
+                <div style="background-color: #f8fafc; border-radius: 8px; padding: 15px; margin: 20px 0; border: 1px solid #f1f5f9;">
+                    <p style="margin: 0 0 8px 0;"><strong>Ticket Details:</strong></p>
+                    <p style="margin: 0 0 5px 0;"><strong>Facility:</strong> ${ticket.facilityName} (${ticket.facilityType})</p>
+                    <p style="margin: 0 0 5px 0;"><strong>Subject:</strong> ${ticket.subject}</p>
+                    <p style="margin: 0;"><strong>Message:</strong> ${ticket.message}</p>
+                </div>
+                <p>Our team will get back to you shortly. You will receive an email once this ticket is resolved.</p>
+                <p style="color: #64748b; font-size: 12px; border-top: 1px solid #f1f5f9; padding-top: 15px; margin-top: 25px;">This is an automated confirmation email. Please do not reply directly to this message.</p>
+            </div>
+        `;
+
+        const adminHtml = `
+            <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 25px; background-color: #ffffff;">
+                <h2 style="color: #c2410c; margin-top: 0;">🚨 New Support Ticket Filed</h2>
+                <p>A new support request has been submitted by a facility administrator.</p>
+                <div style="background-color: #fff7ed; border-radius: 8px; padding: 15px; margin: 20px 0; border: 1px solid #ffedd5;">
+                    <p style="margin: 0 0 5px 0;"><strong>Facility Name:</strong> ${ticket.facilityName}</p>
+                    <p style="margin: 0 0 5px 0;"><strong>Facility Type:</strong> ${ticket.facilityType}</p>
+                    <p style="margin: 0 0 5px 0;"><strong>Sender:</strong> ${ticket.senderName} (${ticket.senderEmail})</p>
+                    <p style="margin: 0 0 5px 0;"><strong>Subject:</strong> ${ticket.subject}</p>
+                    <p style="margin: 0;"><strong>Message:</strong> ${ticket.message}</p>
+                </div>
+                <p>Log in to the Superadmin Dashboard to view and mark this ticket as resolved.</p>
+            </div>
+        `;
+
+        // Send to user
+        await activeTransporter.sendMail({
+            from: `"Appointory Support" <${senderUser}>`,
+            to: ticket.senderEmail,
+            subject: `Support Ticket Received: ${ticket.subject}`,
+            html: userHtml
+        });
+
+        // Send to superadmin if configured
+        const finalAdminEmail = superadminEmail || senderUser;
+        if (finalAdminEmail) {
+            await activeTransporter.sendMail({
+                from: `"Appointory System Alerts" <${senderUser}>`,
+                to: finalAdminEmail,
+                subject: `🚨 Support Ticket: ${ticket.facilityName} - ${ticket.subject}`,
+                html: adminHtml
+            });
+        }
+        console.log(`✅ Support confirmation emails sent for ticket: ${ticket.subject}`);
+    } catch (err) {
+        console.error('Error sending support confirmation emails:', err.message);
+    }
+};
+
+const sendResolutionEmail = async (ticket, resolutionText) => {
+    try {
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        if (!activeTransporter) {
+            throw new Error('Email service is not initialized. Check SMTP configuration.');
+        }
+
+        const html = `
+            <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 25px; background-color: #ffffff;">
+                <h2 style="color: #0F766E; margin-top: 0;">Your Support Ticket Has Been Resolved!</h2>
+                <p>Hello ${ticket.senderName},</p>
+                <p>We are writing to inform you that your support ticket regarding "<strong>${ticket.subject}</strong>" has been resolved by our superadmin team.</p>
+                
+                <div style="background-color: #f0fdf4; border-radius: 8px; padding: 15px; margin: 20px 0; border: 1px solid #dcfce7;">
+                    <p style="margin: 0 0 8px 0; color: #166534; font-weight: bold;">📝 Resolution Message:</p>
+                    <p style="margin: 0; color: #1f2937; white-space: pre-wrap;">${resolutionText}</p>
+                </div>
+
+                <div style="background-color: #f8fafc; border-radius: 8px; padding: 15px; margin: 20px 0; border: 1px solid #f1f5f9; font-size: 13px; color: #4b5563;">
+                    <p style="margin: 0 0 5px 0;"><strong>Original Ticket Summary:</strong></p>
+                    <p style="margin: 0 0 3px 0;"><strong>Subject:</strong> ${ticket.subject}</p>
+                    <p style="margin: 0;"><strong>Your Message:</strong> ${ticket.message}</p>
+                </div>
+                
+                <p>If you have any further questions or if the issue persists, please feel free to submit a new support request.</p>
+                <p style="color: #64748b; font-size: 12px; border-top: 1px solid #f1f5f9; padding-top: 15px; margin-top: 25px;">This is an automated email. Please do not reply directly to this message.</p>
+            </div>
+        `;
+
+        await activeTransporter.sendMail({
+            from: `"Appointory Support" <${senderUser}>`,
+            to: ticket.senderEmail,
+            subject: `Resolved: ${ticket.subject}`,
+            html: html
+        });
+        console.log(`✅ Support resolution email sent to ${ticket.senderEmail} for ticket: ${ticket.subject}`);
+    } catch (err) {
+        console.error('Error sending support resolution email:', err.message);
+        throw err;
+    }
+};
 
 const sendStaffCredentials = async (email, password, name, role, clinicName) => {
     try {
@@ -97,9 +232,11 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
             throw new Error('Missing required fields: email, password, name, role, clinicName');
         }
 
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+
         // Check if transporter is initialized
-        if (!transporter) {
-            throw new Error('Email service is not initialized. Check EMAIL_USER and EMAIL_PASS configuration.');
+        if (!activeTransporter) {
+            throw new Error('Email service is not initialized. Check SMTP configuration.');
         }
 
         // ✅ Parse FRONTEND_URL which may contain multiple URLs separated by commas
@@ -117,7 +254,7 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
         };
 
         const mailOptions = {
-            from: `"Appointory Support" <${process.env.EMAIL_USER}>`,
+            from: `"Appointory Support" <${senderUser}>`,
             to: email,
             subject: `🎉 Welcome to ${clinicName} - Your Staff Account is Ready`,
             html: `
@@ -158,7 +295,7 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
                         <div style="text-align: center; margin: 25px 0;">
                             <a href="${frontendUrl}/login" 
                                style="background-color: ${THEME.marigold}; color: white; padding: 14px 35px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 12px rgba(31, 111, 178, 0.3); transition: all 0.3s ease;">
-                               Login to Your Dashboard
+                                Login to Your Dashboard
                             </a>
                         </div>
 
@@ -207,7 +344,7 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
             `,
         };
 
-        await transporter.sendMail(mailOptions);
+        await activeTransporter.sendMail(mailOptions);
         console.log(`✅ Staff credentials email sent successfully to ${email}`);
     } catch (error) {
         console.error(`❌ Error sending staff credentials email to ${email}:`, error.message);
@@ -222,7 +359,7 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
  * @param {string} html - Email HTML content
  * @throws {Error} If email sending fails
  */
-const sendEmail = async (email, subject, html) => {
+const sendEmail = async (email, subject, html, attachments = []) => {
     try {
         // Validate inputs
         if (!email || !subject || !html) {
@@ -235,33 +372,26 @@ const sendEmail = async (email, subject, html) => {
             throw new Error(`Invalid email format: ${email}`);
         }
 
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+
         // Check if transporter is initialized
-        if (!transporter) {
+        if (!activeTransporter) {
             console.error('❌ Email service is not initialized');
-            console.error(`   EMAIL_USER configured: ${!!process.env.EMAIL_USER}`);
-            console.error(`   EMAIL_PASS configured: ${!!process.env.EMAIL_PASS}`);
-            console.error(`   Email service ready: ${emailServiceReady}`);
-
-            // If credentials are set but service isn't ready, it's likely still initializing
-            if (process.env.EMAIL_USER && process.env.EMAIL_PASS && !emailServiceReady) {
-                console.error('   ⏳ Email service is still initializing... Please try again in a moment');
-                throw new Error('Email service is initializing. Please try again in a few seconds.');
-            }
-
-            throw new Error('Email service is not initialized. Check EMAIL_USER and EMAIL_PASS configuration.');
+            throw new Error('Email service is not initialized. Check SMTP configuration.');
         }
 
         const mailOptions = {
-            from: `"Appointory Support" <${process.env.EMAIL_USER}>`,
+            from: `"Appointory Support" <${senderUser}>`,
             to: email,
             subject: subject,
-            html: html
+            html: html,
+            attachments: attachments
         };
 
         console.log(`📧 Attempting to send email to: ${email}`);
         console.log(`   Subject: ${subject}`);
 
-        await transporter.sendMail(mailOptions);
+        await activeTransporter.sendMail(mailOptions);
         console.log(`✅ Email sent successfully to ${email} - Subject: ${subject}`);
     } catch (error) {
         console.error(`❌ Error sending email to ${email}:`, error.message);
@@ -270,11 +400,9 @@ const sendEmail = async (email, subject, html) => {
 
         // Log specific Gmail error codes
         if (error.code === 'EAUTH') {
-            console.error('⚠️  AUTHENTICATION ERROR: Gmail credentials are invalid or expired');
-            console.error('   Solution: Generate a new Gmail App Password at https://myaccount.google.com/apppasswords');
+            console.error('⚠️  AUTHENTICATION ERROR: SMTP credentials are invalid or expired');
         } else if (error.code === 'ETIMEDOUT' || error.code === 'EHOSTUNREACH') {
-            console.error('⚠️  CONNECTION ERROR: Unable to connect to Gmail SMTP server');
-            console.error('   Solution: Check your internet connection and firewall settings');
+            console.error('⚠️  CONNECTION ERROR: Unable to connect to SMTP server');
         }
 
         throw new Error(`Failed to send email: ${error.message}`);
@@ -285,5 +413,7 @@ module.exports = {
     sendEmail,
     sendStaffCredentials,
     initializeEmailService,
+    sendSupportConfirmationEmail,
+    sendResolutionEmail,
     isEmailServiceReady: () => emailServiceReady
 };

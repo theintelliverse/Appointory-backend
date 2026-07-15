@@ -14,6 +14,18 @@ const independentLabSchema = mongoose.Schema({
     logo: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
 
+    // Subscription & Billing Details
+    isPremium: { type: Boolean, default: false },
+    subscriptionPlan: { type: String, default: 'free' },
+    subscriptionExpiresAt: { type: Date, default: null },
+    showOnNetwork: { type: Boolean, default: true },
+    customSubscriptionPrice: { type: Number },
+    customTrafficLimits: {
+        maxStaff: { type: Number, default: null },
+        maxPatients: { type: Number, default: null },
+        maxQueues: { type: Number, default: null }
+    },
+
     // Password Reset
     resetToken: { type: String, default: null },
     resetTokenExpiry: { type: Date, default: null }

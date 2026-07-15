@@ -81,7 +81,8 @@ exports.getClinicDataPreview = async (req, res) => {
         ]);
 
         // Calculate Average Working Time per Staff within range
-        let statsMatch = { clinicId, logoutTime: { $exists: true } };
+        const mongoose = require('mongoose');
+        let statsMatch = { clinicId: new mongoose.Types.ObjectId(clinicId), logoutTime: { $exists: true } };
         if (startDate && endDate) {
             statsMatch.loginTime = { $gte: new Date(startDate), $lte: new Date(endDate) };
         }

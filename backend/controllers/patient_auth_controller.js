@@ -380,6 +380,13 @@ exports.bookAppointment = async (req, res) => {
             return res.status(404).json({ success: false, message: "Patient profile not found. Please register to book an appointment." });
         }
 
+        const { checkAndLinkPatient } = require('../utils/auth_middleware');
+        try {
+            await checkAndLinkPatient(patient.phone, clinicId);
+        } catch (limitErr) {
+            return res.status(400).json({ success: false, message: limitErr.message });
+        }
+
         // Get clinic and doctor info
         const clinic = await Clinic.findById(clinicId);
         const doctor = await User.findById(doctorId);

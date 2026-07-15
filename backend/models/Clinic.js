@@ -21,7 +21,19 @@ const clinicSchema = mongoose.Schema({
   feeLab: { type: Number, default: 450 },
   feeEmergency: { type: Number, default: 300 },
   feeMedicine: { type: Number, default: 120 },
-  avgWaitFactor: { type: Number, default: 8 }
+  avgWaitFactor: { type: Number, default: 8 },
+
+  // Super Admin Billing & Configuration
+  isPremium: { type: Boolean, default: false },
+  subscriptionPlan: { type: String, default: 'free' },
+  subscriptionExpiresAt: { type: Date, default: null },
+  showOnNetwork: { type: Boolean, default: true },
+  customSubscriptionPrice: { type: Number },
+  customTrafficLimits: {
+    maxStaff: { type: Number, default: null },
+    maxPatients: { type: Number, default: null },
+    maxQueues: { type: Number, default: null }
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Clinic', clinicSchema);

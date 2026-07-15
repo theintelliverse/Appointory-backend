@@ -12,6 +12,18 @@ exports.addStaff = async (req, res) => {
         const { name, email, password, role, specialization } = req.body;
         const clinicId = req.user.clinicId;
 
+        const { getFacilityLimits } = require('../utils/auth_middleware');
+        const limits = await getFacilityLimits(clinicId, 'clinic');
+        if (limits && limits.maxStaff > 0) {
+            const currentStaffCount = await User.countDocuments({ clinicId, isActive: { $ne: false } });
+            if (currentStaffCount >= limits.maxStaff) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Staff limit reached. Your subscription plan allows up to ${limits.maxStaff} staff members.`
+                });
+            }
+        }
+
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({
@@ -371,6 +383,13 @@ exports.createPrescription = async (req, res) => {
 
         if (!patientName || !patientPhone) {
             return res.status(400).json({ success: false, message: "Patient Name and Phone are required" });
+        }
+
+        const { checkAndLinkPatient } = require('../utils/auth_middleware');
+        try {
+            await checkAndLinkPatient(patientPhone, clinicId);
+        } catch (limitErr) {
+            return res.status(400).json({ success: false, message: limitErr.message });
         }
 
         // Create Medical Record

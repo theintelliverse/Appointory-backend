@@ -48,6 +48,28 @@ exports.addToQueue = async (req, res) => {
         const { patientName, patientPhone, doctorId, visitType, isEmergency } = req.body;
         const clinicId = req.user.clinicId;
 
+        const { getFacilityLimits, checkAndLinkPatient } = require('../utils/auth_middleware');
+        try {
+            await checkAndLinkPatient(patientPhone, clinicId);
+        } catch (limitErr) {
+            return res.status(400).json({ success: false, message: limitErr.message });
+        }
+
+        const limits = await getFacilityLimits(clinicId, 'clinic');
+        if (limits && limits.maxQueues > 0) {
+            const activeCount = await Queue.countDocuments({
+                clinicId,
+                isApproved: true,
+                status: { $in: ['Waiting', 'In-Consultation'] }
+            });
+            if (activeCount >= limits.maxQueues) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Queue limit reached. Your subscription plan allows up to ${limits.maxQueues} active queue entries.`
+                });
+            }
+        }
+
         const today = new Date().setHours(0, 0, 0, 0);
         const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: today } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `T-${count + 1}`;
@@ -77,6 +99,13 @@ exports.selfCheckIn = async (req, res) => {
         const { patientName, patientPhone, clinicCode, doctorId } = req.body;
         const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
         if (!clinic) return res.status(404).json({ message: "Invalid Clinic Code" });
+
+        const { checkAndLinkPatient } = require('../utils/auth_middleware');
+        try {
+            await checkAndLinkPatient(patientPhone, clinic._id);
+        } catch (limitErr) {
+            return res.status(400).json({ success: false, message: limitErr.message });
+        }
 
         const newRequest = await Queue.create({
             clinicId: clinic._id,
@@ -128,6 +157,31 @@ exports.approvePatient = async (req, res) => {
         const { id } = req.params;
         const { isEmergency } = req.body;
         const clinicId = req.user.clinicId;
+
+        const { getFacilityLimits, checkAndLinkPatient } = require('../utils/auth_middleware');
+        const limits = await getFacilityLimits(clinicId, 'clinic');
+        if (limits && limits.maxQueues > 0) {
+            const activeCount = await Queue.countDocuments({
+                clinicId,
+                isApproved: true,
+                status: { $in: ['Waiting', 'In-Consultation'] }
+            });
+            if (activeCount >= limits.maxQueues) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Queue limit reached. Your subscription plan allows up to ${limits.maxQueues} active queue entries.`
+                });
+            }
+        }
+
+        const pendingEntry = await Queue.findById(id);
+        if (pendingEntry) {
+            try {
+                await checkAndLinkPatient(pendingEntry.patientPhone, clinicId);
+            } catch (limitErr) {
+                return res.status(400).json({ success: false, message: limitErr.message });
+            }
+        }
 
         const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: new Date().setHours(0, 0, 0, 0) } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `P-${count + 1}`;

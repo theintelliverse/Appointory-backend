@@ -4,14 +4,16 @@ const userSchema = mongoose.Schema({
   clinicId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Clinic',
-    required: true
+    required: function() {
+      return this.role !== 'superadmin';
+    }
   },
   name: { type: String, required: true },
   email: { type: String, required: true },
   password: { type: String, required: true },
   role: {
     type: String,
-    enum: ['admin', 'doctor', 'receptionist', 'lab'],
+    enum: ['admin', 'doctor', 'receptionist', 'lab', 'superadmin'],
     default: 'receptionist'
   },
   // Doctor-specific fields

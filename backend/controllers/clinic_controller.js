@@ -357,7 +357,7 @@ exports.getAllClinicsQueues = async (req, res) => {
         const Queue = require('../models/Queue');
         
         // Fetch clinics that are active and marked to show on the landing page (or not explicitly hidden)
-        const clinics = await Clinic.find({ isActive: true, showOnLandingPage: { $ne: false } })
+        const clinics = await Clinic.find({ isActive: true, showOnNetwork: { $ne: false } })
             .select('_id name clinicCode avgWaitFactor');
             
         const today = new Date();
@@ -439,3 +439,32 @@ exports.getAllClinicsQueues = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+/**
+ * @desc    Get a single clinic details (PUBLIC)
+ * @route   GET /api/clinic/public/:clinicId
+ * @access  Public
+ */
+exports.getPublicClinicDetails = async (req, res) => {
+    try {
+        const { clinicId } = req.params;
+        const clinic = await Clinic.findById(clinicId).select(
+            '_id name address contactPhone clinicCode openingTime closingTime slotDurationMinutes workingDays isPremium subscriptionPlan subscriptionExpiresAt'
+        );
+        if (!clinic) {
+            return res.status(404).json({
+                success: false,
+                message: "Clinic not found"
+            });
+        }
+        res.status(200).json({
+            success: true,
+            data: clinic
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};

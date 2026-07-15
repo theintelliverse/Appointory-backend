@@ -38,6 +38,7 @@ const clinicroutes = require('./routes/clinic_routes');
 const callRoutes = require('./routes/call_routes');
 const labRoutes = require('./routes/lab_routes');
 const labConnectionRoutes = require('./routes/lab_connection_routes');
+const superadminRoutes = require('./routes/superadmin_routes');
 
 const app = express();
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
@@ -242,14 +243,19 @@ app.use((req, res, next) => {
     next();
 });
 
+const { checkMaintenanceMode, checkSubscription } = require('./utils/auth_middleware');
+
 // Routes
+app.use(checkMaintenanceMode);
+
 app.use('/api/auth', authRoutes);
-app.use('/api/staff', staffRoutes);
-app.use('/api/queue', queueRoutes);
-app.use('/api/clinic', clinicroutes);
-app.use('/api/call', callRoutes);
-app.use('/api/lab', labRoutes);
-app.use('/api/lab-connect', labConnectionRoutes);
+app.use('/api/staff', checkSubscription, staffRoutes);
+app.use('/api/queue', checkSubscription, queueRoutes);
+app.use('/api/clinic', checkSubscription, clinicroutes);
+app.use('/api/call', checkSubscription, callRoutes);
+app.use('/api/lab', checkSubscription, labRoutes);
+app.use('/api/lab-connect', checkSubscription, labConnectionRoutes);
+app.use('/api/superadmin', superadminRoutes);
 
 // Health Check
 app.get('/', (req, res) => {

@@ -27,13 +27,22 @@ exports.registerLab = async (req, res) => {
 
         const hashedPassword = await hashPassword(password);
 
+        const SystemConfig = require('../models/SystemConfig');
+        const systemConfig = await SystemConfig.findOne();
+        const trialDays = systemConfig ? (systemConfig.trialPeriodDays ?? 30) : 30;
+
+        const trialExpiry = new Date();
+        trialExpiry.setDate(trialExpiry.getDate() + trialDays);
+
         const lab = await IndependentLab.create({
             labName,
             labCode: labCode.toUpperCase(),
             email: email.toLowerCase(),
             password: hashedPassword,
             phone,
-            address
+            address,
+            subscriptionPlan: 'independent-lab',
+            subscriptionExpiresAt: trialExpiry
         });
 
         res.status(201).json({

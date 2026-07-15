@@ -12,11 +12,20 @@ exports.registerClinic = async (req, res) => {
     try {
         const { clinicName, clinicCode, address, contactPhone, adminName, email, password } = req.body;
 
+        const SystemConfig = require('../models/SystemConfig');
+        const systemConfig = await SystemConfig.findOne();
+        const trialDays = systemConfig ? (systemConfig.trialPeriodDays ?? 30) : 30;
+
+        const trialExpiry = new Date();
+        trialExpiry.setDate(trialExpiry.getDate() + trialDays);
+
         const newClinic = await Clinic.create({
             name: clinicName,
             clinicCode: clinicCode.toUpperCase(),
             address,
-            contactPhone
+            contactPhone,
+            subscriptionPlan: 'clinic-only',
+            subscriptionExpiresAt: trialExpiry
         });
 
         const hashedPassword = await hashPassword(password);
@@ -48,6 +57,27 @@ exports.loginStaff = async (req, res) => {
     try {
         const { clinicCode, email, password } = req.body;
 
+        // If no clinic code is provided, check for a Super Admin
+        if (!clinicCode) {
+            const user = await User.findOne({ email, role: 'superadmin' });
+            if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+            const isMatch = await comparePassword(password, user.password);
+            if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
+
+            const token = generateToken(user);
+            return res.status(200).json({
+                success: true,
+                token,
+                user: {
+                    id: user._id,
+                    name: user.name,
+                    role: user.role,
+                    email: user.email
+                }
+            });
+        }
+
         const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
         if (!clinic) return res.status(404).json({ message: "Clinic not found" });
 
@@ -74,6 +104,7 @@ exports.loginStaff = async (req, res) => {
                 id: user._id,
                 name: user.name,
                 role: user.role,
+                email: user.email,
                 clinicName: clinic.name,
                 clinicId: clinic._id
             }
