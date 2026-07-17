@@ -471,9 +471,11 @@ exports.logoutStaff = async (req, res) => {
     try {
         const { sessionId } = req.body;
         if (sessionId) {
-            await StaffSession.findByIdAndUpdate(sessionId, {
-                logoutTime: new Date()
-            });
+            const session = await StaffSession.findById(sessionId);
+            if (session) {
+                session.logoutTime = new Date();
+                await session.save();
+            }
         }
         res.status(200).json({ success: true, message: "Logged out successfully" });
     } catch (error) {

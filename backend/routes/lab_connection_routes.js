@@ -12,7 +12,7 @@ router.get('/search', protect, ctrl.searchLabs);
 // 🏥 CLINIC ROUTES (Clinic Admin Only)
 // =============================================
 router.post('/request', protect, authorize('admin'), ctrl.sendConnectionRequest);
-router.get('/clinic', protect, authorize('admin'), ctrl.getClinicConnections);
+router.get('/clinic', protect, authorize('admin', 'doctor'), ctrl.getClinicConnections);
 router.get('/clinic/labs', protect, authorize('admin'), ctrl.getAllLabsForClinic);
 router.patch('/clinic/:id/respond', protect, authorize('admin'), ctrl.respondToConnectionByClinic);
 router.delete('/:id', protect, authorize('admin'), ctrl.disconnectLab);
@@ -42,5 +42,9 @@ router.patch('/test-requests/:id/status', protectLab, ctrl.updateRequestStatus);
 
 // Lab uploads report for a test request
 router.post('/test-requests/:id/upload-report', protectLab, ctrl.uploadReportForRequest);
+
+// Lab settings routes
+router.get('/settings/lab', protectLab, ctrl.getLabSettings);
+router.patch('/settings/lab', protectLab, ctrl.updateLabSettings);
 
 module.exports = router;

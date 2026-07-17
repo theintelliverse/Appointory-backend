@@ -257,16 +257,52 @@ exports.startConsultation = async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 };
 
-// 6️⃣ Refer to Lab (SMS REMOVED - Doctor informs patient directly)
+// 6️⃣ Refer to Lab (SMS with lab details and timings)
 exports.referToLab = async (req, res) => {
     try {
         const { queueId } = req.params;
-        const { testName } = req.body;
-        const entry = await Queue.findByIdAndUpdate(queueId, {
+        const { testName, labId } = req.body;
+        
+        const updateFields = {
             status: 'Waiting',
             currentStage: 'Lab-Pending',
-            requiredTest: testName
-        }, { new: true });
+            requiredTest: testName,
+            labId: labId || null
+        };
+
+        const entry = await Queue.findByIdAndUpdate(queueId, updateFields, { new: true });
+
+        if (labId) {
+            const IndependentLab = require('../models/IndependentLab');
+            const ExternalLabRequest = require('../models/ExternalLabRequest');
+            
+            const lab = await IndependentLab.findById(labId);
+            if (lab) {
+                // Create external lab request
+                await ExternalLabRequest.create({
+                    labId,
+                    clinicId: entry.clinicId,
+                    patientName: entry.patientName,
+                    patientPhone: entry.patientPhone,
+                    testName,
+                    notes: entry.consultationNotes || '',
+                    queueId: entry._id
+                });
+
+                // Send SMS with timings & details
+                const timingStr = `${lab.openingTime || '08:00'} to ${lab.closingTime || '20:00'}`;
+                const trackingUrl = `${getFrontendUrl()}/patient/status?id=${entry._id}`;
+                const smsMsg = `✅ Token: ${entry.tokenNumber || 'T-1'} | referred for "${testName}" at ${lab.labName}.\n📍 Address: ${lab.address}\n📞 Phone: ${lab.phone}\n⏰ Timings: ${timingStr}\nTrack your live queue status here: ${trackingUrl} - Appointory`;
+                
+                if (entry.patientPhone) {
+                    sendTwilioAlert(entry.patientPhone, smsMsg).catch(() => {});
+                }
+                
+                if (req.io) {
+                    req.io.to(`lab_${labId}`).emit('testRequestUpdate');
+                }
+            }
+        }
 
         // 📢 SOCKET EMIT: Lab Dashboard updates instantly
         if (req.io) req.io.to(entry.clinicId.toString()).emit('queueUpdate');
@@ -391,10 +427,10 @@ exports.getLiveQueue = async (req, res) => {
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] },
             $or: [
-                // Show walk-ins created today
-                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
-                // Show appointments scheduled for today
-                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+                // Show active walk-ins (regardless of date, since they are still in the active queue)
+                { visitType: { $ne: 'Appointment' } },
+                // Show appointments scheduled for today or past days (to avoid losing uncompleted ones)
+                { visitType: 'Appointment', appointmentDate: { $lt: tomorrow } }
             ]
         }).sort({ isEmergency: -1, createdAt: 1 }).populate('doctorId', 'name specialization');
 
@@ -432,13 +468,19 @@ exports.getDoctorQueue = async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
         const doctorId = req.user.id || req.user._id;
         const myQueue = await Queue.find({
             clinicId: req.user.clinicId,
             doctorId: doctorId,
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] },
-            createdAt: { $gte: today }
+            $or: [
+                { visitType: { $ne: 'Appointment' } },
+                { visitType: 'Appointment', appointmentDate: { $lt: tomorrow } }
+            ]
         }).sort({ createdAt: 1 });
 
         const myQueueWithWait = await Promise.all(myQueue.map(async (item) => {
@@ -544,7 +586,8 @@ exports.getPatientStatus = async (req, res) => {
         const { queueId } = req.params;
         const entry = await Queue.findById(queueId)
             .populate('clinicId', 'name openingTime closingTime')
-            .populate('doctorId', 'name isAvailable');
+            .populate('doctorId', 'name isAvailable')
+            .populate('labId', 'labName address phone logo openingTime closingTime');
 
         if (!entry) return res.status(200).json({ isCompleted: true });
 
@@ -669,12 +712,44 @@ exports.getPatientStatus = async (req, res) => {
 
         const predictedTurnTimeStr = formatTurnTime(predictedTurnDate);
 
+        // Calculate Lab Queue People Ahead
+        let labPeopleAhead = 0;
+        if (entry.labId) {
+            try {
+                const ExternalLabRequest = require('../models/ExternalLabRequest');
+                const currentReq = await ExternalLabRequest.findOne({ queueId: entry._id });
+                if (currentReq) {
+                    labPeopleAhead = await ExternalLabRequest.countDocuments({
+                        labId: entry.labId,
+                        status: { $in: ['Pending', 'Accepted', 'Processing'] },
+                        createdAt: { $lt: currentReq.createdAt }
+                    });
+                }
+            } catch (err) {
+                console.error("Error calculating external lab people ahead:", err);
+            }
+        } else if (entry.currentStage === 'Lab-Pending') {
+            try {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                labPeopleAhead = await Queue.countDocuments({
+                    clinicId: entry.clinicId?._id || entry.clinicId,
+                    currentStage: 'Lab-Pending',
+                    createdAt: { $gte: today, $lt: entry.createdAt }
+                });
+            } catch (err) {
+                console.error("Error calculating in-house lab people ahead:", err);
+            }
+        }
+
         res.status(200).json({
             success: true,
             data: {
                 patientName: entry.patientName,
                 tokenNumber: entry.tokenNumber,
                 status: entry.status,
+                currentStage: entry.currentStage,
+                requiredTest: entry.requiredTest,
                 clinicName: entry.clinicId?.name || 'Clinic',
                 openingTime: entry.clinicId?.openingTime || '09:00',
                 closingTime: entry.clinicId?.closingTime || '17:00',
@@ -683,7 +758,9 @@ exports.getPatientStatus = async (req, res) => {
                 estimatedWait: displayWaitMinutes,
                 predictedTurnTime: predictedTurnTimeStr,
                 isFutureDay,
-                isDoctorOnBreak: !(entry.doctorId && entry.doctorId.isAvailable)
+                isDoctorOnBreak: !(entry.doctorId && entry.doctorId.isAvailable),
+                labDetails: entry.labId || null,
+                labPeopleAhead
             }
         });
     } catch (error) {
@@ -766,8 +843,8 @@ exports.getPublicDoctorQueue = async (req, res) => {
             status: { $in: ['Waiting', 'In-Consultation'] },
             currentStage: { $nin: ['Lab-Pending', 'Lab-Processing'] },
             $or: [
-                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
-                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
+                { visitType: { $ne: 'Appointment' } },
+                { visitType: 'Appointment', appointmentDate: { $lt: tomorrow } }
             ]
         })
             .populate('clinicId', 'name openingTime closingTime')
@@ -1059,9 +1136,9 @@ exports.getDoctorDashboardStats = async (req, res) => {
             clinicId,
             doctorId,
             $or: [
+                { status: { $in: ['Pending-Approval', 'Waiting', 'In-Consultation'] } },
                 { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
                 { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } },
-                { status: 'Pending-Approval' },
                 { isApproved: false }
             ]
         }).sort({ isEmergency: -1, appointmentDate: 1, createdAt: 1 });

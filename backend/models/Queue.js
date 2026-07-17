@@ -43,6 +43,7 @@ const queueSchema = mongoose.Schema({
   appointmentDate: { type: Date }, // For scheduled appointments - when patient booked
   reason: { type: String }, // Reason for visit - why patient is scheduling appointment
   assignedLabStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  labId: { type: mongoose.Schema.Types.ObjectId, ref: 'IndependentLab' },
   startTime: Date,
   endTime: Date,
   diagnosis: { type: String }, // Diagnosis from doctor

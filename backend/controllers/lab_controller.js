@@ -10,7 +10,11 @@ exports.getLabDashboardStats = async (req, res) => {
         
         const query = { 
             clinicId: clinicId,
-            currentStage: { $in: ['Lab-Pending', 'Lab-Processing', 'Lab-Completed', 'Lab-Rejected'] }
+            currentStage: { $in: ['Lab-Pending', 'Lab-Processing', 'Lab-Completed', 'Lab-Rejected'] },
+            $or: [
+                { labId: null },
+                { labId: { $exists: false } }
+            ]
         };
         
         if (!filterAll) {
@@ -59,7 +63,11 @@ exports.getRecentReports = async (req, res) => {
 
         const query = { 
             clinicId: clinicId,
-            currentStage: 'Lab-Completed'
+            currentStage: 'Lab-Completed',
+            $or: [
+                { labId: null },
+                { labId: { $exists: false } }
+            ]
         };
 
         if (!filterAll) {
@@ -80,6 +88,7 @@ exports.getRecentReports = async (req, res) => {
             success: true,
             data: recentReports
         });
+
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -93,7 +102,11 @@ exports.getLabQueueByStatus = async (req, res) => {
 
         const queueData = await Queue.find({
             clinicId: clinicId,
-            currentStage: status
+            currentStage: status,
+            $or: [
+                { labId: null },
+                { labId: { $exists: false } }
+            ]
         })
             .sort({ isEmergency: -1, createdAt: 1 })
             .populate('doctorId', 'name specialization');

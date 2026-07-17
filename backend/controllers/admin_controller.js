@@ -11,9 +11,12 @@ exports.downloadClinicReport = async (req, res) => {
         // Build Filter
         let filter = { clinicId };
         if (startDate && endDate) {
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            end.setHours(23, 59, 59, 999);
             filter.visitDate = {
-                $gte: new Date(startDate),
-                $lte: new Date(endDate)
+                $gte: start,
+                $lte: end
             };
         }
 
@@ -56,9 +59,12 @@ exports.getClinicDataPreview = async (req, res) => {
         let medicalFilter = { clinicId };
         let sessionFilter = { clinicId };
 
+        let start = null;
+        let end = null;
+
         if (startDate && endDate) {
-            const start = new Date(startDate);
-            const end = new Date(endDate);
+            start = new Date(startDate);
+            end = new Date(endDate);
             end.setHours(23, 59, 59, 999); // Include full end day
 
             medicalFilter.visitDate = { $gte: start, $lte: end };
@@ -83,8 +89,8 @@ exports.getClinicDataPreview = async (req, res) => {
         // Calculate Average Working Time per Staff within range
         const mongoose = require('mongoose');
         let statsMatch = { clinicId: new mongoose.Types.ObjectId(clinicId), logoutTime: { $exists: true } };
-        if (startDate && endDate) {
-            statsMatch.loginTime = { $gte: new Date(startDate), $lte: new Date(endDate) };
+        if (start && end) {
+            statsMatch.loginTime = { $gte: start, $lte: end };
         }
 
         const staffStats = await StaffSession.aggregate([

@@ -301,6 +301,42 @@ exports.uploadReportForRequest = [
             request.completedAt = Date.now();
             await request.save();
 
+            // Synchronize reports to patient profile and update clinic queue stage
+            try {
+                const Patient = require('../models/Patient');
+                const cleanPhone = request.patientPhone.replace(/\D/g, '').slice(-10);
+                let patients = await Patient.find({ phone: new RegExp(cleanPhone + '$') });
+                
+                if (!patients || patients.length === 0) {
+                    patients = [new Patient({
+                        name: request.patientName,
+                        phone: cleanPhone,
+                        documents: []
+                    })];
+                }
+                
+                const newDocuments = newReports.map(rep => ({
+                    visitId: request.queueId || null,
+                    title: rep.title,
+                    fileUrl: rep.fileUrl,
+                    publicId: rep.publicId,
+                    fileType: rep.fileType,
+                    uploadedAt: rep.uploadedAt
+                }));
+                
+                for (const patient of patients) {
+                    patient.documents.push(...newDocuments);
+                }
+                await Promise.all(patients.map(p => p.save()));
+
+                if (request.queueId) {
+                    const Queue = require('../models/Queue');
+                    await Queue.findByIdAndUpdate(request.queueId, { currentStage: 'Lab-Completed' });
+                }
+            } catch (syncErr) {
+                console.error('⚠️ Sync to patient/queue failed:', syncErr.message);
+            }
+
             if (req.io) {
                 req.io.to(`lab_${labId}`).emit('testRequestUpdate');
                 req.io.to(request.clinicId.toString()).emit('queueUpdate');
@@ -492,6 +528,43 @@ exports.getAllLabsForClinic = async (req, res) => {
         });
 
         res.status(200).json({ success: true, data: labData });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🔬 LAB SETTINGS (Independent Lab)
+// =============================================
+exports.getLabSettings = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const LabSettings = require('../models/LabSettings');
+        
+        let settings = await LabSettings.findOne({ labId });
+        if (!settings) {
+            settings = await LabSettings.create({ labId });
+        }
+        
+        res.status(200).json({ success: true, data: settings });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.updateLabSettings = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const LabSettings = require('../models/LabSettings');
+        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName } = req.body;
+        
+        const settings = await LabSettings.findOneAndUpdate(
+            { labId },
+            { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName },
+            { new: true, upsert: true }
+        );
+        
+        res.status(200).json({ success: true, message: 'Settings saved successfully.', data: settings });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

@@ -13,6 +13,8 @@ const independentLabSchema = mongoose.Schema({
     address: { type: String, required: true, trim: true },
     logo: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
+    openingTime: { type: String, default: '08:00' },
+    closingTime: { type: String, default: '20:00' },
 
     // Subscription & Billing Details
     isPremium: { type: Boolean, default: false },
