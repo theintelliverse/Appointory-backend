@@ -1,552 +1,383 @@
-const User = require('../models/User');
-const Clinic = require('../models/Clinic');
-const Patient = require('../models/Patient');
 const Queue = require('../models/Queue');
-const MedicalRecord = require('../models/MedicalRecord');
-const { hashPassword } = require('../utils/auth_helper');
-const { sendStaffCredentials } = require('../utils/send_email');
+const Patient = require('../models/Patient');
+const ExternalLabRequest = require('../models/ExternalLabRequest');
+const mongoose = require('mongoose');
 
-// --- ➕ ADD STAFF ---
-exports.addStaff = async (req, res) => {
-    try {
-        const { name, email, password, role, specialization } = req.body;
-        const clinicId = req.user.clinicId;
-
-        const { getFacilityLimits } = require('../utils/auth_middleware');
-        const limits = await getFacilityLimits(clinicId, 'clinic');
-        if (limits && limits.maxStaff > 0) {
-            const currentStaffCount = await User.countDocuments({ clinicId, isActive: { $ne: false } });
-            if (currentStaffCount >= limits.maxStaff) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Staff limit reached. Your subscription plan allows up to ${limits.maxStaff} staff members.`
-                });
-            }
-        }
-
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({
-                success: false,
-                message: "A user with this email is already registered."
-            });
-        }
-
-        const hashedPassword = await hashPassword(password);
-
-        const newStaff = await User.create({
-            clinicId,
-            name,
-            email,
-            password: hashedPassword,
-            role,
-            specialization: role === 'doctor' ? specialization : undefined,
-            isAvailable: true,
-            isActive: true, // Ensuring soft-delete readiness
-            bio: "",
-            education: "",
-            experience: 0,
-            phoneNumber: ""
-        });
-
-        // 📢 SOCKET EMIT: Notify Admin to refresh the staff list
-        if (req.io) req.io.to(clinicId.toString()).emit('staffListUpdated');
-
-        const clinic = await Clinic.findById(clinicId);
-
-        try {
-            await sendStaffCredentials(
-                email,
-                password,
-                name,
-                role,
-                clinic ? clinic.name : "Our Clinic"
-            );
-        } catch (mailError) {
-            console.error("Nodemailer Error:", mailError);
-        }
-
-        res.status(201).json({
-            success: true,
-            message: `${role.charAt(0).toUpperCase() + role.slice(1)} added and credentials emailed!`,
-            staff: { id: newStaff._id, name: newStaff.name, role: newStaff.role }
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- 🔑 RESEND CREDENTIALS ---
-exports.resendCredentials = async (req, res) => {
-    try {
-        const { staffId, newTemporaryPassword } = req.body;
-        const staff = await User.findById(staffId);
-        const clinic = await Clinic.findById(req.user.clinicId);
-
-        if (!staff) return res.status(404).json({ message: "Staff not found" });
-
-        staff.password = await hashPassword(newTemporaryPassword);
-        await staff.save();
-
-        await sendStaffCredentials(staff.email, newTemporaryPassword, staff.name, staff.role, clinic.name);
-
-        res.status(200).json({ success: true, message: "Credentials resent successfully" });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- 📋 GET ALL STAFF ---
-exports.getAllStaff = async (req, res) => {
+// 🆕 GET LAB DASHBOARD STATISTICS
+exports.getLabDashboardStats = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;
-        const staffMembers = await User.find({ clinicId })
-            .select('-password')
+        const filterAll = req.query.filter === 'all';
+
+        const query = {
+            clinicId: clinicId,
+            currentStage: { $in: ['Lab-Pending', 'Lab-Processing', 'Lab-Completed', 'Lab-Rejected'] }
+        };
+
+        if (!filterAll) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            query.createdAt = { $gte: today, $lt: tomorrow };
+        }
+
+        console.log(`🔬 Lab stats query for clinicId: ${clinicId}, filterAll: ${filterAll}`);
+
+        const queueData = await Queue.find(query)
+            .select('patientName patientPhone currentStage requiredTest isEmergency createdAt tokenNumber labId doctorId _id')
+            .populate('labId', 'labName phone address')
+            .populate('doctorId', 'name specialization')
             .sort({ createdAt: -1 });
 
-        res.status(200).json({ success: true, count: staffMembers.length, staff: staffMembers });
+        // Calculate statistics
+        const stats = {
+            totalRequests: queueData.length,
+            samplesCollected: queueData.filter(q => ['Lab-Processing', 'Lab-Completed'].includes(q.currentStage)).length,
+            inProcess: queueData.filter(q => q.currentStage === 'Lab-Processing').length,
+            completed: queueData.filter(q => q.currentStage === 'Lab-Completed').length,
+            pending: queueData.filter(q => ['Lab-Pending', 'Waiting'].includes(q.currentStage)).length,
+            rejected: queueData.filter(q => q.currentStage === 'Lab-Rejected').length
+        };
+
+        res.status(200).json({
+            success: true,
+            data: {
+                stats,
+                queueData: queueData
+            }
+        });
     } catch (error) {
+        console.error('❌ Lab stats error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
-exports.toggleAvailability = async (req, res) => {
+// 🆕 GET RECENT LAB REPORTS
+exports.getRecentReports = async (req, res) => {
     try {
-        const { staffId } = req.params;
-        const targetId = staffId === 'me' ? req.user.id : staffId;
+        const clinicId = req.user.clinicId;
+        const filterAll = req.query.filter === 'all';
+        const limit = parseInt(req.query.limit) || 50;
 
-        const user = await User.findById(targetId);
-        if (!user) return res.status(404).json({ message: "Staff member not found" });
+        const query = {
+            clinicId: clinicId,
+            currentStage: 'Lab-Completed'
+        };
 
-        user.isAvailable = !user.isAvailable;
-        await user.save();
-
-        // 📢 DEBUG LOG
-        console.log(`🩺 Emit: doctorStatusChanged for Dr. ${user.name} to Room: ${user.clinicId}`);
-        if (req.io) {
-            req.io.to(user.clinicId.toString()).emit('doctorStatusChanged', {
-                doctorId: user._id,
-                isAvailable: user.isAvailable
-            });
+        if (!filterAll) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            query.$or = [
+                { updatedAt: { $gte: today, $lt: tomorrow } },
+                { createdAt: { $gte: today, $lt: tomorrow } }
+            ];
         }
 
-        res.status(200).json({ success: true, isAvailable: user.isAvailable });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-};
-// --- 🏥 PUBLIC: GET DOCTORS ---
-// --- 🏥 PUBLIC: GET DOCTORS (Update this in staff_controller.js) ---
-exports.getPublicDoctors = async (req, res) => {
-    try {
-        const { clinicCode } = req.params;
-        const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
-        if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found" });
+        // 1. Get recently completed lab tasks from Queue
+        const recentQueueReports = await Queue.find(query)
+            .sort({ updatedAt: -1 })
+            .limit(limit)
+            .select('patientName patientPhone requiredTest createdAt updatedAt currentStage _id')
+            .lean();
 
-        // Filter to show only today's patients
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        // 2. Get completed requests from ExternalLabRequest
+        const extQuery = { clinicId, status: 'Completed' };
+        if (!filterAll) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            extQuery.$or = [
+                { completedAt: { $gte: today, $lt: tomorrow } },
+                { updatedAt: { $gte: today, $lt: tomorrow } },
+                { createdAt: { $gte: today, $lt: tomorrow } }
+            ];
+        }
 
-        const doctors = await User.find({
-            clinicId: clinic._id,
-            role: 'doctor',
-            isActive: { $ne: false }
-        }).select('name specialization education experience _id isAvailable');
+        const externalReports = await ExternalLabRequest.find(extQuery)
+            .sort({ completedAt: -1, updatedAt: -1 })
+            .limit(limit)
+            .lean();
 
-        // Fetch Queue counts for each doctor (Active Only for Today)
-        const doctorsWithQueue = await Promise.all(doctors.map(async (doc) => {
-            const queueCount = await Queue.countDocuments({
-                doctorId: doc._id,
-                status: { $in: ['Waiting', 'In-Consultation'] },
-                $or: [
-                    { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
-                    { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
-                ]
-            });
-            return {
-                ...doc.toObject(),
-                queueCount
-            };
+        const formattedExternal = externalReports.map(ext => ({
+            _id: ext._id,
+            patientName: ext.patientName,
+            patientPhone: ext.patientPhone,
+            requiredTest: ext.testName,
+            createdAt: ext.createdAt,
+            updatedAt: ext.completedAt || ext.updatedAt,
+            currentStage: 'Lab-Completed',
+            queueId: ext.queueId
         }));
 
-        res.status(200).json({ 
-            success: true, 
-            clinicName: clinic.name, 
-            clinicId: clinic._id,
-            doctors: doctorsWithQueue 
+        // Merge queue and external reports, avoiding duplicates if queueId matches
+        const existingQueueIds = new Set(recentQueueReports.map(q => q._id.toString()));
+        const uniqueExternal = formattedExternal.filter(ext => !ext.queueId || !existingQueueIds.has(ext.queueId.toString()));
+
+        const combined = [...recentQueueReports, ...uniqueExternal].sort((a, b) => {
+            return new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt);
+        }).slice(0, limit);
+
+        res.status(200).json({
+            success: true,
+            data: combined
+        });
+
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// 🆕 GET LAB QUEUE BY STATUS
+exports.getLabQueueByStatus = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const status = req.params.status || 'Lab-Pending';
+
+        const queueData = await Queue.find({
+            clinicId: clinicId,
+            currentStage: status
+        })
+            .sort({ isEmergency: -1, createdAt: 1 })
+            .populate('doctorId', 'name specialization')
+            .populate('labId', 'labName phone address');
+
+        res.status(200).json({
+            success: true,
+            data: queueData
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// --- 🗄️ GET PATIENT FULL PROFILE (The Digital Locker) ---
-exports.getPatientFullProfile = async (req, res) => {
+// 🆕 GET LAB ANALYTICS
+exports.getLabAnalytics = async (req, res) => {
     try {
-        const { phone } = req.params;
+        const clinicId = req.user.clinicId;
 
-        // Normalize phone to search (last 10 digits)
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        let patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        // Fetch all lab related tasks (pending and completed)
+        const labTasks = await Queue.find({
+            clinicId: clinicId,
+            currentStage: { $in: ['Lab-Pending', 'Lab-Completed'] }
+        });
 
-        if (!patient) {
-            // Fallback 1: Search all patients by clean last 10 digits
-            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } });
-            patient = allProfiles.find(p => String(p.phone || '').replace(/\D/g, '').slice(-10) === cleanPhone);
-        }
+        // 1. Avg Processing Time (in hours)
+        // 1. Calculate Real Turnaround/Processing Time (in hours)
+        const completedIds = labTasks.filter(t => t.currentStage === 'Lab-Completed').map(t => t._id.toString());
+        let totalHours = 0;
+        let countedMatches = 0;
 
-        if (!patient) {
-            // Fallback 2: Check if patient exists in Queue or MedicalRecords
-            const queueEntry = await Queue.findOne({ 
-                patientPhone: new RegExp(cleanPhone + '$') 
-            }).sort({ createdAt: -1 });
+        if (completedIds.length > 0) {
+            // Find patient profiles that have matching report visitIds
+            const patientsWithReports = await Patient.find({
+                "documents.visitId": { $in: completedIds }
+            });
 
-            if (queueEntry) {
-                patient = new Patient({
-                    name: queueEntry.patientName,
-                    phone: cleanPhone,
-                    documents: [],
-                    vitals: []
+            patientsWithReports.forEach(patient => {
+                patient.documents.forEach(doc => {
+                    if (doc.visitId && completedIds.includes(doc.visitId.toString())) {
+                        const queueItem = labTasks.find(t => t._id.toString() === doc.visitId.toString());
+                        if (queueItem && queueItem.createdAt && doc.uploadedAt) {
+                            const start = new Date(queueItem.createdAt);
+                            const end = new Date(doc.uploadedAt);
+                            // Turnaround time in hours
+                            const diffHrs = Math.max(0.5, (end - start) / (1000 * 60 * 60));
+                            totalHours += diffHrs;
+                            countedMatches++;
+                        }
+                    }
                 });
-                await patient.save();
+            });
+        }
+
+        const avgProcessingTime = countedMatches > 0 ? (totalHours / countedMatches).toFixed(1) : "2.4";
+
+        // 2. Success & Completion Rates
+        let completedCount = labTasks.filter(q => q.currentStage === 'Lab-Completed').length;
+        let totalLabTasks = labTasks.length;
+        const successRate = totalLabTasks > 0 ? ((completedCount / totalLabTasks) * 100).toFixed(1) : "100.0";
+
+        // 3. Unique Patients counted dynamically
+        const uniquePatients = new Set(labTasks.map(task => task.patientPhone || task.patientName));
+        const totalPatients = uniquePatients.size;
+        const pendingReviews = labTasks.filter(q => q.currentStage === 'Lab-Pending').length;
+
+        // 4. Monthly Aggregation
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
+        sixMonthsAgo.setDate(1);
+        sixMonthsAgo.setHours(0, 0, 0, 0);
+
+        const monthlyAggregation = await Queue.aggregate([
+            {
+                $match: {
+                    clinicId: new mongoose.Types.ObjectId(clinicId),
+                    currentStage: { $in: ['Lab-Pending', 'Lab-Completed', 'Lab-Processing'] },
+                    createdAt: { $gte: sixMonthsAgo }
+                }
+            },
+            {
+                $group: {
+                    _id: {
+                        month: { $month: "$createdAt" },
+                        year: { $year: "$createdAt" }
+                    },
+                    tests: { $sum: 1 },
+                    completed: {
+                        $sum: { $cond: [{ $eq: ["$currentStage", "Lab-Completed"] }, 1, 0] }
+                    }
+                }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
+        ]);
+
+        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        let monthlyStats = [];
+
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date();
+            d.setMonth(d.getMonth() - i);
+            const m = d.getMonth() + 1;
+            const y = d.getFullYear();
+
+            const found = monthlyAggregation.find(x => x._id.month === m && x._id.year === y);
+            monthlyStats.push({
+                name: monthNames[m - 1],
+                tests: found ? found.tests : 0,
+                completed: found ? found.completed : 0
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            data: {
+                avgProcessingTime: `${avgProcessingTime} hrs`,
+                successRate: `${successRate}%`,
+                totalPatients,
+                pendingReviews,
+                monthlyStats
             }
-        }
-
-        if (!patient) {
-            return res.status(404).json({
-                success: false,
-                message: "This patient hasn't set up a Digital Locker yet."
-            });
-        }
-
-        res.status(200).json({
-            success: true,
-            data: patient
         });
+
     } catch (error) {
+        console.error('❌ Lab Analytics Error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// --- 🗑️ HARD DELETE STAFF (Keep for cleanup) ---
-exports.deleteStaff = async (req, res) => {
+exports.uploadLabReport = async (req, res) => {
+    console.log("🚀 [1] Controller Started: Upload request received.");
     try {
-        const { staffId } = req.params;
-        if (req.user.id === staffId) {
-            return res.status(400).json({ success: false, message: "Security violation: Self-deletion blocked." });
+        const { patientPhone, queueId } = req.params;
+
+        // 🔍 DEBUG: Check Files (Handle both single file or multiple files array)
+        let files = [];
+        if (req.file) {
+            files.push(req.file);
+        } else if (req.files && req.files.length > 0) {
+            files = req.files;
         }
 
-        const user = await User.findByIdAndDelete(staffId);
-        if (!user) return res.status(404).json({ success: false, message: "Staff member not found." });
-
-        // 📢 SOCKET EMIT: Refresh Admin UI
-        if (req.io) req.io.to(user.clinicId.toString()).emit('staffListUpdated');
-
-        res.status(200).json({ success: true, message: "Staff member removed successfully." });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-exports.updatePatientProfile = async (req, res) => {
-    try {
-        const { phone } = req.params;
-        const { age, gender, bloodGroup, vitals } = req.body;
-
-        // Find patient by last 10 digits to handle country code variations
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
-
-        if (!patient) return res.status(404).json({ success: false, message: "Patient not found" });
-
-        // 1. Update Personal Basic Info
-        if (age) patient.age = age;
-        if (gender) patient.gender = gender;
-        if (bloodGroup) patient.bloodGroup = bloodGroup;
-
-        // 2. Push New Vitals Entry (if provided)
-        if (vitals) {
-            patient.vitals.push({
-                ...vitals,
-                recordedBy: req.user.id,
-                recordedAt: Date.now()
-            });
+        if (files.length === 0) {
+            console.error("❌ [2] Error: No files uploaded.");
+            return res.status(400).json({ success: false, message: "No file objects found." });
         }
 
-        await patient.save();
+        console.log(`✅ [2] Received ${files.length} file(s) for upload.`);
 
-        res.status(200).json({
-            success: true,
-            message: "Patient health profile updated successfully",
-            data: patient
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// 🆕 UPDATE PATIENT VITALS (Receptionist/Staff)
-exports.updatePatientVitals = async (req, res) => {
-    try {
-        const { phone } = req.params;
-        const { vitals } = req.body;
-
-        // Validate vitals data
-        if (!vitals || Object.keys(vitals).length === 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'No vitals data provided'
-            });
+        // 🔍 DEBUG: Check Queue Entry
+        const queueEntry = await Queue.findById(queueId);
+        if (!queueEntry) {
+            console.error("❌ [3] Error: Queue session not found.");
+            return res.status(404).json({ success: false, message: "Queue session not found." });
         }
+        console.log("✅ [3] Queue Entry Found:", queueEntry.patientName);
 
-        // Find patient by last 10 digits
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
-
-        if (!patient) {
-            return res.status(404).json({
-                success: false,
-                message: 'Patient not found'
-            });
-        }
-
-        // Add new vitals entry with timestamp and recorder info
-        const newVitalsEntry = {
-            bloodPressure: vitals.bloodPressure || undefined,
-            pulseRate: vitals.pulseRate || undefined,
-            temperature: vitals.temperature || undefined,
-            sugarLevel: vitals.sugarLevel || undefined,
-            weight: vitals.weight ? Number(vitals.weight) : undefined,
-            height: vitals.height ? Number(vitals.height) : undefined,
-            bmi: vitals.bmi ? Number(vitals.bmi) : undefined,
-            recordedBy: req.user.id,
-            recordedAt: new Date()
-        };
-
-        // Remove undefined fields
-        Object.keys(newVitalsEntry).forEach(key =>
-            newVitalsEntry[key] === undefined && delete newVitalsEntry[key]
-        );
-
-        patient.vitals.push(newVitalsEntry);
-        await patient.save();
-
-        console.log(`✅ Vitals updated for patient ${cleanPhone}`);
-
-        res.status(200).json({
-            success: true,
-            message: 'Patient vitals updated successfully',
-            data: patient.vitals
-        });
-    } catch (error) {
-        console.error('❌ Error updating vitals:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to update vitals: ' + error.message
-        });
-    }
-};
-
-// --- 🗄️ ARCHIVE STAFF ---
-exports.archiveStaff = async (req, res) => {
-    try {
-        const { staffId } = req.params;
-
-        const user = await User.findByIdAndUpdate(staffId, {
-            isActive: false,
-            deletedAt: Date.now()
-        }, { new: true });
-
-        if (!user) return res.status(404).json({ message: "Staff not found" });
-
-        // 📢 SOCKET EMIT: Remove from active UI lists immediately
-        if (req.io) req.io.to(user.clinicId.toString()).emit('staffListUpdated');
-
-        res.status(200).json({
-            success: true,
-            message: "Staff member archived. Access revoked but records preserved."
-        });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// --- 🩺 GET ALL PRESCRIPTIONS FOR A DOCTOR ---
-exports.getAllPrescriptions = async (req, res) => {
-    try {
-        const doctorId = req.user.id || req.user._id;
-        const clinicId = req.user.clinicId;
-
-        // Find all medical records (prescriptions) created by this doctor at this clinic
-        const records = await MedicalRecord.find({ clinicId, doctorId })
-            .sort({ visitDate: -1 });
-
-        // Map visitDate to createdAt so it matches the expected frontend keys perfectly
-        const mappedRecords = records.map(r => {
-            const obj = r.toObject();
-            obj.createdAt = r.visitDate;
-            return obj;
-        });
-
-        res.status(200).json({
-            success: true,
-            data: mappedRecords
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- ➕ CREATE NEW PRESCRIPTION ---
-exports.createPrescription = async (req, res) => {
-    try {
-        const { patientName, patientPhone, diagnosis, notes, medicines } = req.body;
-        const doctorId = req.user.id || req.user._id;
-        const clinicId = req.user.clinicId;
-
-        if (!patientName || !patientPhone) {
-            return res.status(400).json({ success: false, message: "Patient Name and Phone are required" });
-        }
-
-        const { checkAndLinkPatient } = require('../utils/auth_middleware');
-        try {
-            await checkAndLinkPatient(patientPhone, clinicId);
-        } catch (limitErr) {
-            return res.status(400).json({ success: false, message: limitErr.message });
-        }
-
-        // Create Medical Record
-        const record = await MedicalRecord.create({
-            clinicId,
-            doctorId,
-            patientName,
-            patientPhone,
-            diagnosis: diagnosis || notes || "General Consultation",
-            notes: notes || "Issued directly from Prescription Records",
-            medicines: medicines || [],
-            visitDate: Date.now()
-        });
-
-        // Add to digital locker history if the patient profile exists
+        // 🔍 DEBUG: Check Patient(s)
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
-        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
-        if (patient) {
-            patient.medicalHistory.push({
-                visitId: record._id,
-                doctorName: req.user.name || "Doctor",
-                clinicName: req.user.clinicName || "Our Clinic",
-                diagnosis: diagnosis || notes || "General Consultation",
-                date: Date.now(),
-                medicines: medicines || [],
-                symptoms: notes || "Direct Prescription"
+        let patients = await Patient.find({ phone: new RegExp(cleanPhone + '$') });
+
+        // Fallback for inconsistent phone formats in DB
+        if (!patients || patients.length === 0) {
+            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
+                .select('name phone documents');
+            patients = allProfiles.filter((profile) => {
+                const normalized = String(profile.phone || '').replace(/\D/g, '').slice(-10);
+                return normalized === cleanPhone;
             });
-            await patient.save();
         }
 
-        // Map visitDate to createdAt for response consistency
-        const resObj = record.toObject();
-        resObj.createdAt = record.visitDate;
-
-        res.status(201).json({
-            success: true,
-            message: "Prescription issued successfully!",
-            data: resObj
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- 📁 GET CLINICAL TEMPLATES ---
-exports.getClinicalTemplates = async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id).select('templates');
-        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-        res.status(200).json({
-            success: true,
-            data: user.templates || []
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- 📁 CREATE CLINICAL TEMPLATE ---
-exports.createClinicalTemplate = async (req, res) => {
-    try {
-        const { name, drugs, instruction, category } = req.body;
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-        
-        const newTemplate = {
-            name,
-            drugs,
-            instruction,
-            category: category || 'General'
-        };
-        
-        user.templates = user.templates || [];
-        user.templates.push(newTemplate);
-        await user.save();
-        
-        const addedTemplate = user.templates[user.templates.length - 1];
-        
-        res.status(201).json({
-            success: true,
-            message: "Template created successfully",
-            data: addedTemplate
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- 📁 UPDATE CLINICAL TEMPLATE ---
-exports.updateClinicalTemplate = async (req, res) => {
-    try {
-        const { templateId } = req.params;
-        const { name, drugs, instruction, category } = req.body;
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-        
-        let template = user.templates.id(templateId);
-        if (!template) {
-            template = user.templates.find(t => t._id && t._id.toString() === templateId);
+        if (!patients || patients.length === 0) {
+            console.log("👤 [4] Patient not found, creating new profile...");
+            patients = [new Patient({
+                name: queueEntry.patientName,
+                phone: cleanPhone,
+                documents: []
+            })];
         }
-        if (!template) return res.status(404).json({ success: false, message: "Template not found" });
-        
-        if (name) template.name = name;
-        if (drugs) template.drugs = drugs;
-        if (instruction !== undefined) template.instruction = instruction;
-        if (category) template.category = category;
-        
-        await user.save();
-        
-        res.status(200).json({
-            success: true,
-            message: "Template updated successfully",
-            data: template
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
 
-// --- 📁 DELETE CLINICAL TEMPLATE ---
-exports.deleteClinicalTemplate = async (req, res) => {
-    try {
-        const { templateId } = req.params;
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
-        
-        user.templates = user.templates.filter(t => t._id && t._id.toString() !== templateId);
-        await user.save();
-        
-        res.status(200).json({
-            success: true,
-            message: "Template deleted successfully"
+        // 🗄️ Update Patient Documents for all matched profiles for each uploaded file
+        const newDocuments = files.map((file, idx) => {
+            const cloudinarySecureUrl = file.secure_url || file.path || file.url;
+            console.log(`🔗 File [${idx + 1}] Cloudinary URL:`, cloudinarySecureUrl);
+
+            // Extract a realistic title if multiple reports are uploaded (e.g. CBC Report, Lipid Report, etc.)
+            let fileTitle = req.body.title || "Diagnostic Report";
+            if (files.length > 1) {
+                const originalName = file.originalname ? file.originalname.split('.')[0] : `Report-${idx + 1}`;
+                fileTitle = `${fileTitle} (${originalName})`;
+            }
+
+            return {
+                visitId: queueId,
+                title: fileTitle,
+                fileUrl: cloudinarySecureUrl,
+                publicId: file.public_id || file.filename || null,
+                fileType: file.mimetype && file.mimetype.includes('pdf') ? 'PDF' : 'Image',
+                uploadedAt: Date.now()
+            };
         });
+
+        for (const patient of patients) {
+            patient.documents.push(...newDocuments);
+        }
+
+        console.log(`💾 [5] Attempting to save ${patients.length} patient profile(s)...`);
+        await Promise.all(patients.map((patient) => patient.save()));
+        console.log("✅ [5] Patient profile(s) saved successfully.");
+
+        // 🏷️ Update Queue Stage
+        queueEntry.currentStage = 'Lab-Completed';
+        await queueEntry.save();
+        console.log("✅ [6] Queue stage updated to Lab-Completed.");
+
+        // 📢 SOCKET EMIT
+        if (req.io) {
+            const clinicRoom = queueEntry.clinicId.toString();
+            console.log("📢 [7] Emitting socket update to room:", clinicRoom);
+            req.io.to(clinicRoom).emit('queueUpdate');
+        }
+
+        // 🏁 SEND RESPONSE (This stops the spinning loader)
+        console.log("🏁 [8] Sending success response to frontend.");
+        return res.status(200).json({
+            success: true,
+            message: `${files.length} report(s) published successfully.`,
+            fileUrls: newDocuments.map(d => d.fileUrl),
+            matchedProfiles: patients.length
+        });
+
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error("💥 [FATAL ERROR]:", error);
+        // Ensure we send a response even on crash
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error during upload.",
+            error: error.message
+        });
     }
 };

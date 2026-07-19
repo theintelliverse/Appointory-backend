@@ -217,16 +217,53 @@ exports.getClinicTestRequests = async (req, res) => {
 
 // =============================================
 // 📋 LAB VIEWS ALL RECEIVED TEST REQUESTS
-// GET /api/lab-connect/test-requests/lab
-// =============================================
 exports.getLabTestRequests = async (req, res) => {
     try {
         const labId = req.lab.id;
-        const requests = await ExternalLabRequest.find({ labId })
-            .populate('clinicId', 'name clinicCode address contactPhone')
-            .sort({ createdAt: -1 });
+        const Queue = require('../models/Queue');
+        const mongoose = require('mongoose');
 
-        res.status(200).json({ success: true, data: requests });
+        const queryLabId = mongoose.Types.ObjectId.isValid(labId) ? new mongoose.Types.ObjectId(labId) : labId;
+
+        // 1. ExternalLabRequest records
+        const requests = await ExternalLabRequest.find({
+            $or: [{ labId: queryLabId }, { labId: labId }]
+        })
+            .populate('clinicId', 'name clinicCode address contactPhone')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // 2. Queue records assigned to this labId
+        const queueRequests = await Queue.find({
+            $or: [{ labId: queryLabId }, { labId: labId }],
+            currentStage: { $in: ['Lab-Pending', 'Lab-Processing', 'Lab-Completed', 'Lab-Rejected'] }
+        })
+            .populate('clinicId', 'name clinicCode address contactPhone')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        const formattedQueue = queueRequests.map(q => ({
+            _id: q._id,
+            clinicId: q.clinicId,
+            patientName: q.patientName,
+            patientPhone: q.patientPhone,
+            testName: q.requiredTest || 'Diagnostic Test',
+            notes: q.consultationNotes || '',
+            queueId: q._id,
+            status: q.currentStage === 'Lab-Pending' ? 'Pending' :
+                    q.currentStage === 'Lab-Processing' ? 'Processing' :
+                    q.currentStage === 'Lab-Completed' ? 'Completed' :
+                    q.currentStage === 'Lab-Rejected' ? 'Rejected' : 'Pending',
+            createdAt: q.createdAt,
+            updatedAt: q.updatedAt
+        }));
+
+        const existingIds = new Set(requests.map(r => (r.queueId ? r.queueId.toString() : r._id.toString())));
+        const uniqueQueue = formattedQueue.filter(q => !existingIds.has(q._id.toString()));
+
+        const combined = [...requests, ...uniqueQueue].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        res.status(200).json({ success: true, data: combined });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
