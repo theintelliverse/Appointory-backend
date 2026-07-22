@@ -77,7 +77,9 @@ const parseAllowedOrigins = (value) => {
 
 const allowedOrigins = new Set([
     ...parseAllowedOrigins(process.env.CORS_ORIGINS),
-    ...parseAllowedOrigins(process.env.FRONTEND_URL)
+    ...parseAllowedOrigins(process.env.FRONTEND_URL),
+    normalizeOrigin('https://appointory.in'),
+    normalizeOrigin('https://www.appointory.in')
 ]);
 
 if (!isProduction) {
@@ -243,10 +245,20 @@ app.use((req, res, next) => {
     next();
 });
 
+const publicSeoRoutes = require('./routes/public_seo_routes');
+const publicSeoController = require('./controllers/public_seo_controller');
 const { checkMaintenanceMode, checkSubscription } = require('./utils/auth_middleware');
 
 // Routes
 app.use(checkMaintenanceMode);
+
+// 🌐 Public SEO & AI Search Endpoints
+app.get('/sitemap.xml', publicSeoController.generateSitemapXml);
+app.get('/robots.txt', publicSeoController.generateRobotsTxt);
+app.get('/llms.txt', publicSeoController.generateLlmTxt);
+app.get('/llms-full.txt', publicSeoController.generateLlmTxt);
+app.get('/ai.txt', publicSeoController.generateLlmTxt);
+app.use('/api/public/seo', publicSeoRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/staff', checkSubscription, staffRoutes);

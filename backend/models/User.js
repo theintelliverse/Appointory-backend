@@ -39,7 +39,33 @@ const userSchema = mongoose.Schema({
 
   // Password Reset
   resetToken: { type: String, default: null },
-  resetTokenExpiry: { type: Date, default: null }
+  resetTokenExpiry: { type: Date, default: null },
+
+  // 🌐 Doctor SEO & Public Profile Management
+  slug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  consultationFee: { type: Number, default: 500 },
+  availableDays: {
+    type: [String],
+    default: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+  },
+  languages: {
+    type: [String],
+    default: ['English', 'Hindi']
+  },
+  medicalLicenseNumber: { type: String, default: '' },
+  seoTitle: { type: String, default: '' },
+  seoDescription: { type: String, default: '' },
+  socialLinks: {
+    linkedin: { type: String, default: '' },
+    twitter: { type: String, default: '' },
+    instagram: { type: String, default: '' },
+    youtube: { type: String, default: '' }
+  },
+  rating: {
+    score: { type: Number, default: 4.9 },
+    count: { type: Number, default: 22 }
+  },
+  videoUrl: { type: String, default: '' }
 }, { timestamps: true });
 
 // Ensures email is unique within a single clinic only

@@ -137,11 +137,41 @@ exports.getMe = async (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
     try {
-        const { name, bio, education, experience, phoneNumber, profileImage, clinicLocation, clinicContact } = req.body;
+        const { 
+            name, bio, education, experience, phoneNumber, profileImage, 
+            clinicLocation, clinicContact, slug, consultationFee, 
+            medicalLicenseNumber, seoTitle, seoDescription 
+        } = req.body;
+
+        // Format slug if provided
+        let formattedSlug = slug ? slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') : undefined;
+
+        if (formattedSlug) {
+            const existingSlug = await User.findOne({
+                slug: formattedSlug,
+                _id: { $ne: req.user.id }
+            });
+            if (existingSlug) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This public doctor profile URL slug is already taken."
+                });
+            }
+        }
+
+        const updatePayload = {
+            name, bio, education, experience, phoneNumber, profileImage, 
+            clinicLocation, clinicContact,
+            ...(formattedSlug && { slug: formattedSlug }),
+            ...(consultationFee !== undefined && { consultationFee }),
+            ...(medicalLicenseNumber !== undefined && { medicalLicenseNumber }),
+            ...(seoTitle !== undefined && { seoTitle }),
+            ...(seoDescription !== undefined && { seoDescription })
+        };
 
         const updatedUser = await User.findByIdAndUpdate(
             req.user.id,
-            { name, bio, education, experience, phoneNumber, profileImage, clinicLocation, clinicContact },
+            updatePayload,
             { new: true, runValidators: true }
         ).select('-password');
 

@@ -57,9 +57,24 @@ exports.updateClinicSettings = async (req, res) => {
             feeLab,
             feeEmergency,
             feeMedicine,
-            avgWaitFactor
+            avgWaitFactor,
+            slug,
+            bio,
+            specialties,
+            specialtiesStr,
+            seoTitle,
+            seoDescription
         } = req.body;
         const clinicId = req.user.clinicId;
+
+        // Parse specialties if passed as string
+        let specialtiesArray = specialties;
+        if (specialtiesStr !== undefined && typeof specialtiesStr === 'string') {
+            specialtiesArray = specialtiesStr.split(',').map(s => s.trim()).filter(Boolean);
+        }
+
+        // Format slug if provided
+        let formattedSlug = slug ? slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') : undefined;
 
         // 1. Unique Clinic Code Validation
         if (clinicCode) {
@@ -71,6 +86,20 @@ exports.updateClinicSettings = async (req, res) => {
                 return res.status(400).json({
                     success: false,
                     message: "This Clinic Code is already taken by another facility."
+                });
+            }
+        }
+
+        // 1b. Unique Slug Validation
+        if (formattedSlug) {
+            const existingSlug = await Clinic.findOne({
+                slug: formattedSlug,
+                _id: { $ne: clinicId }
+            });
+            if (existingSlug) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This public profile URL slug is already taken. Please choose a different slug."
                 });
             }
         }
@@ -93,7 +122,12 @@ exports.updateClinicSettings = async (req, res) => {
                 ...(feeLab !== undefined && { feeLab }),
                 ...(feeEmergency !== undefined && { feeEmergency }),
                 ...(feeMedicine !== undefined && { feeMedicine }),
-                ...(avgWaitFactor !== undefined && { avgWaitFactor })
+                ...(avgWaitFactor !== undefined && { avgWaitFactor }),
+                ...(formattedSlug && { slug: formattedSlug }),
+                ...(bio !== undefined && { bio }),
+                ...(specialtiesArray !== undefined && { specialties: specialtiesArray }),
+                ...(seoTitle !== undefined && { seoTitle }),
+                ...(seoDescription !== undefined && { seoDescription })
             },
             { new: true, runValidators: true }
         );

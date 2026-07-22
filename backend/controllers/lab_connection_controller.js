@@ -593,13 +593,42 @@ exports.updateLabSettings = async (req, res) => {
     try {
         const labId = req.lab.id;
         const LabSettings = require('../models/LabSettings');
-        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName } = req.body;
+        const IndependentLab = require('../models/IndependentLab');
+        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName, slug, bio, availableTests, seoTitle, seoDescription } = req.body;
         
         const settings = await LabSettings.findOneAndUpdate(
             { labId },
             { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName },
             { new: true, upsert: true }
         );
+
+        // Format slug if provided
+        let formattedSlug = slug ? slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') : undefined;
+
+        if (formattedSlug) {
+            const existingSlug = await IndependentLab.findOne({
+                slug: formattedSlug,
+                _id: { $ne: labId }
+            });
+            if (existingSlug) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This public lab profile URL slug is already taken."
+                });
+            }
+        }
+
+        // Also sync profile and test catalog to IndependentLab model
+        const labUpdate = {};
+        if (formattedSlug) labUpdate.slug = formattedSlug;
+        if (bio !== undefined) labUpdate.bio = bio;
+        if (Array.isArray(availableTests)) labUpdate.availableTests = availableTests;
+        if (seoTitle !== undefined) labUpdate.seoTitle = seoTitle;
+        if (seoDescription !== undefined) labUpdate.seoDescription = seoDescription;
+
+        if (Object.keys(labUpdate).length > 0) {
+            await IndependentLab.findByIdAndUpdate(labId, labUpdate);
+        }
         
         res.status(200).json({ success: true, message: 'Settings saved successfully.', data: settings });
     } catch (error) {

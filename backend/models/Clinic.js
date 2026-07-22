@@ -33,7 +33,32 @@ const clinicSchema = mongoose.Schema({
     maxStaff: { type: Number, default: null },
     maxPatients: { type: Number, default: null },
     maxQueues: { type: Number, default: null }
-  }
+  },
+
+  // 🌐 SEO & Public Profile Management
+  slug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  bio: { type: String, default: '' },
+  specialties: [{ type: String }],
+  locationGeo: {
+    lat: { type: Number, default: 28.6139 },
+    lng: { type: Number, default: 77.2090 }
+  },
+  seoTitle: { type: String, default: '' },
+  seoDescription: { type: String, default: '' },
+  seoKeywords: [{ type: String }],
+  socialLinks: {
+    facebook: { type: String, default: '' },
+    instagram: { type: String, default: '' },
+    twitter: { type: String, default: '' },
+    linkedin: { type: String, default: '' },
+    youtube: { type: String, default: '' }
+  },
+  rating: {
+    score: { type: Number, default: 4.8 },
+    count: { type: Number, default: 15 }
+  },
+  accreditation: [{ type: String }],
+  videoUrl: { type: String, default: '' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Clinic', clinicSchema);
