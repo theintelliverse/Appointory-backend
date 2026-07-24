@@ -965,3 +965,318 @@ exports.updateFacilitySubscription = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// GET /api/superadmin/facility/:id/overview?type=clinic|lab
+exports.getFacilityOverview = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { type } = req.query; // 'clinic' or 'lab'
+
+        const Queue = require('../models/Queue');
+
+        let facilityDoc = null;
+        let members = [];
+        let patients = [];
+        let supportTickets = [];
+        let payments = [];
+        let analytics = {
+            daily: { labels: [], patients: [], revenue: [], consultations: [] },
+            weekly: { labels: [], patients: [], revenue: [], consultations: [] },
+            monthly: { labels: [], patients: [], revenue: [], consultations: [] },
+            yearly: { labels: [], patients: [], revenue: [], consultations: [] }
+        };
+
+        if (type === 'clinic') {
+            facilityDoc = await Clinic.findById(id);
+            if (!facilityDoc) return res.status(404).json({ success: false, message: 'Clinic not found' });
+
+            // Members (Doctors, Receptionists, Staff)
+            members = await User.find({ clinicId: id }).select('-password').sort({ createdAt: -1 });
+
+            // Patients
+            patients = await Patient.find({ visitedClinics: id }).sort({ updatedAt: -1 }).limit(100);
+
+            // Payments & Financials
+            payments = await SubscriptionPayment.find({ facilityId: id }).sort({ createdAt: -1 });
+
+            // Support Tickets
+            supportTickets = await SupportTicket.find({
+                $or: [
+                    { facilityName: facilityDoc.name },
+                    { senderEmail: { $in: members.map(m => m.email) } }
+                ]
+            }).sort({ createdAt: -1 });
+
+            // Fetch queues for analytics
+            const queues = await Queue.find({ clinicId: id }).sort({ createdAt: 1 });
+
+            // Aggregate Chart Metrics (Daily, Weekly, Monthly, Yearly)
+            const now = new Date();
+
+            // Daily (Last 24 Hours - 6 4-hour slots)
+            const dailyLabels = ['12 AM', '4 AM', '8 AM', '12 PM', '4 PM', '8 PM'];
+            const dailyPatients = [0, 0, 0, 0, 0, 0];
+            const dailyConsults = [0, 0, 0, 0, 0, 0];
+            const dailyRevenue = [0, 0, 0, 0, 0, 0];
+
+            // Weekly (Last 7 days)
+            const weeklyLabels = [];
+            const weeklyPatients = [];
+            const weeklyConsults = [];
+            const weeklyRevenue = [];
+            for (let i = 6; i >= 0; i--) {
+                const d = new Date(now);
+                d.setDate(d.getDate() - i);
+                weeklyLabels.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
+                weeklyPatients.push(0);
+                weeklyConsults.push(0);
+                weeklyRevenue.push(0);
+            }
+
+            // Monthly (Last 30 days - 4 weeks)
+            const monthlyLabels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+            const monthlyPatients = [0, 0, 0, 0];
+            const monthlyConsults = [0, 0, 0, 0];
+            const monthlyRevenue = [0, 0, 0, 0];
+
+            // Yearly (12 Months)
+            const yearlyLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const yearlyPatients = new Array(12).fill(0);
+            const yearlyConsults = new Array(12).fill(0);
+            const yearlyRevenue = new Array(12).fill(0);
+
+            // Populate from Queue records
+            queues.forEach(q => {
+                const qDate = new Date(q.createdAt);
+                const diffDays = Math.floor((now - qDate) / (1000 * 60 * 60 * 24));
+
+                // Weekly bucket
+                if (diffDays >= 0 && diffDays < 7) {
+                    const idx = 6 - diffDays;
+                    if (weeklyPatients[idx] !== undefined) {
+                        weeklyPatients[idx]++;
+                        if (q.status === 'Completed') weeklyConsults[idx]++;
+                        weeklyRevenue[idx] += (facilityDoc.feeConsult || 500);
+                    }
+                }
+
+                // Monthly bucket
+                if (diffDays >= 0 && diffDays < 30) {
+                    const weekIdx = Math.min(3, Math.floor(diffDays / 7));
+                    monthlyPatients[3 - weekIdx]++;
+                    if (q.status === 'Completed') monthlyConsults[3 - weekIdx]++;
+                    monthlyRevenue[3 - weekIdx] += (facilityDoc.feeConsult || 500);
+                }
+
+                // Yearly bucket
+                if (qDate.getFullYear() === now.getFullYear()) {
+                    const mIdx = qDate.getMonth();
+                    yearlyPatients[mIdx]++;
+                    if (q.status === 'Completed') yearlyConsults[mIdx]++;
+                    yearlyRevenue[mIdx] += (facilityDoc.feeConsult || 500);
+                }
+
+                // Daily bucket (Today)
+                if (qDate.toDateString() === now.toDateString()) {
+                    const hour = qDate.getHours();
+                    const hourIdx = Math.floor(hour / 4);
+                    if (dailyPatients[hourIdx] !== undefined) {
+                        dailyPatients[hourIdx]++;
+                        if (q.status === 'Completed') dailyConsults[hourIdx]++;
+                        dailyRevenue[hourIdx] += (facilityDoc.feeConsult || 500);
+                    }
+                }
+            });
+
+            analytics = {
+                daily: { labels: dailyLabels, patients: dailyPatients, revenue: dailyRevenue, consultations: dailyConsults },
+                weekly: { labels: weeklyLabels, patients: weeklyPatients, revenue: weeklyRevenue, consultations: weeklyConsults },
+                monthly: { labels: monthlyLabels, patients: monthlyPatients, revenue: monthlyRevenue, consultations: monthlyConsults },
+                yearly: { labels: yearlyLabels, patients: yearlyPatients, revenue: yearlyRevenue, consultations: yearlyConsults }
+            };
+        } else {
+            facilityDoc = await IndependentLab.findById(id).select('-password');
+            if (!facilityDoc) return res.status(404).json({ success: false, message: 'Lab not found' });
+
+            // Members (Lab Admin info as primary member)
+            members = [{
+                _id: facilityDoc._id,
+                name: facilityDoc.labName,
+                email: facilityDoc.email,
+                phone: facilityDoc.phone,
+                role: 'Lab Director',
+                createdAt: facilityDoc.createdAt,
+                isActive: facilityDoc.isActive
+            }];
+
+            // External Lab Requests
+            const requests = await ExternalLabRequest.find({ labId: id }).sort({ createdAt: -1 });
+
+            // Unique patients from test requests
+            const patientMap = new Map();
+            requests.forEach(r => {
+                if (!patientMap.has(r.patientPhone)) {
+                    patientMap.set(r.patientPhone, {
+                        _id: r._id,
+                        name: r.patientName,
+                        phone: r.patientPhone,
+                        lastVisit: r.requestedAt,
+                        totalVisits: 1,
+                        status: r.status
+                    });
+                } else {
+                    const existing = patientMap.get(r.patientPhone);
+                    existing.totalVisits += 1;
+                    if (new Date(r.requestedAt) > new Date(existing.lastVisit)) {
+                        existing.lastVisit = r.requestedAt;
+                    }
+                }
+            });
+            patients = Array.from(patientMap.values());
+
+            // Financials
+            payments = await SubscriptionPayment.find({ facilityId: id }).sort({ createdAt: -1 });
+
+            // Support Tickets
+            supportTickets = await SupportTicket.find({
+                $or: [
+                    { facilityName: facilityDoc.labName },
+                    { senderEmail: facilityDoc.email }
+                ]
+            }).sort({ createdAt: -1 });
+
+            // Analytics for Lab (Test Requests Volume & Revenue)
+            const now = new Date();
+            const weeklyLabels = [];
+            const weeklyRequests = [];
+            const weeklyCompleted = [];
+            const weeklyRevenue = [];
+
+            for (let i = 6; i >= 0; i--) {
+                const d = new Date(now);
+                d.setDate(d.getDate() - i);
+                weeklyLabels.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
+                weeklyRequests.push(0);
+                weeklyCompleted.push(0);
+                weeklyRevenue.push(0);
+            }
+
+            requests.forEach(r => {
+                const rDate = new Date(r.requestedAt);
+                const diffDays = Math.floor((now - rDate) / (1000 * 60 * 60 * 24));
+                if (diffDays >= 0 && diffDays < 7) {
+                    const idx = 6 - diffDays;
+                    if (weeklyRequests[idx] !== undefined) {
+                        weeklyRequests[idx]++;
+                        if (r.status === 'Completed') weeklyCompleted[idx]++;
+                        weeklyRevenue[idx] += 450;
+                    }
+                }
+            });
+
+            const yearlyLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const yearlyRequests = new Array(12).fill(0);
+            const yearlyCompleted = new Array(12).fill(0);
+            const yearlyRevenue = new Array(12).fill(0);
+
+            requests.forEach(r => {
+                const rDate = new Date(r.requestedAt);
+                if (rDate.getFullYear() === now.getFullYear()) {
+                    const mIdx = rDate.getMonth();
+                    yearlyRequests[mIdx]++;
+                    if (r.status === 'Completed') yearlyCompleted[mIdx]++;
+                    yearlyRevenue[mIdx] += 450;
+                }
+            });
+
+            analytics = {
+                daily: { labels: ['Morning', 'Afternoon', 'Evening'], patients: [requests.length, 0, 0], revenue: [requests.length * 450, 0, 0], consultations: [requests.length, 0, 0] },
+                weekly: { labels: weeklyLabels, patients: weeklyRequests, revenue: weeklyRevenue, consultations: weeklyCompleted },
+                monthly: { labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'], patients: [requests.length, 0, 0, 0], revenue: [requests.length * 450, 0, 0, 0], consultations: [requests.length, 0, 0, 0] },
+                yearly: { labels: yearlyLabels, patients: yearlyRequests, revenue: yearlyRevenue, consultations: yearlyCompleted }
+            };
+        }
+
+        res.status(200).json({
+            success: true,
+            type,
+            facility: facilityDoc,
+            members,
+            patients,
+            financials: {
+                payments,
+                totalRevenue: payments.filter(p => p.status === 'captured').reduce((acc, p) => acc + p.amount, 0)
+            },
+            supportTickets,
+            analytics
+        });
+    } catch (error) {
+        console.error('Error fetching facility overview:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// PATCH /api/superadmin/facility/:id/approval
+exports.approveOrRejectFacility = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { type, status, reason } = req.body; // type: 'clinic'|'lab', status: 'approved'|'rejected'
+
+        if (!['approved', 'rejected'].includes(status)) {
+            return res.status(400).json({ success: false, message: "Status must be 'approved' or 'rejected'" });
+        }
+
+        let facilityName = '';
+        let contactEmail = '';
+        let facilityCode = '';
+
+        if (type === 'clinic') {
+            const clinic = await Clinic.findById(id);
+            if (!clinic) return res.status(404).json({ success: false, message: 'Clinic not found' });
+
+            clinic.approvalStatus = status;
+            clinic.isActive = (status === 'approved');
+            await clinic.save();
+
+            facilityName = clinic.name;
+            facilityCode = clinic.clinicCode;
+
+            // Find primary admin email
+            const admin = await User.findOne({ clinicId: clinic._id, role: 'admin' });
+            if (admin) contactEmail = admin.email;
+        } else {
+            const lab = await IndependentLab.findById(id);
+            if (!lab) return res.status(404).json({ success: false, message: 'Lab not found' });
+
+            lab.approvalStatus = status;
+            lab.isActive = (status === 'approved');
+            await lab.save();
+
+            facilityName = lab.labName;
+            facilityCode = lab.labCode;
+            contactEmail = lab.email;
+        }
+
+        // Send decision notification email
+        const { sendApprovalDecisionEmail } = require('../utils/send_email');
+        if (contactEmail) {
+            sendApprovalDecisionEmail({
+                facilityName,
+                facilityType: type,
+                facilityCode,
+                contactEmail,
+                status,
+                reason
+            }).catch(err => console.error('Failed to send approval decision email:', err.message));
+        }
+
+        res.status(200).json({
+            success: true,
+            approvalStatus: status,
+            message: `Facility ${facilityName} has been ${status.toUpperCase()}.`
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+

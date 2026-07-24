@@ -409,11 +409,185 @@ const sendEmail = async (email, subject, html, attachments = []) => {
     }
 };
 
+/**
+ * Send registration pending acknowledgment email to facility admin and alert email to superadmin
+ */
+const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facilityCode, contactEmail, contactPhone, address, adminName }) => {
+    try {
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        if (!activeTransporter) return;
+
+        const SystemConfig = require('../models/SystemConfig');
+        const config = await SystemConfig.findOne();
+        const superadminEmail = config?.superadminEmail || senderUser;
+
+        const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';
+        const frontendUrl = frontendUrlList.replace(/\/$/, '');
+
+        const facilityHtml = `
+            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+                <div style="background: linear-gradient(135deg, #0F766E 0%, #1F6FB2 100%); padding: 25px 20px; text-align: center; color: white;">
+                    <h2 style="margin: 0; font-size: 24px;">⌛ Registration Received!</h2>
+                    <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Appointory ${facilityType.toUpperCase()} Onboarding</p>
+                </div>
+                <div style="padding: 25px; color: #334155; line-height: 1.6;">
+                    <p>Dear <strong>${adminName || facilityName}</strong>,</p>
+                    <p>Thank you for registering <strong>${facilityName}</strong> on Appointory Healthcare Platform.</p>
+                    <div style="background-color: #f8fafc; border-left: 4px solid #1F6FB2; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                        <h4 style="margin: 0 0 8px 0; color: #0F766E; font-size: 14px;">📋 Request Summary</h4>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Name:</strong> ${facilityName}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Type:</strong> ${facilityType.toUpperCase()}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Code:</strong> ${facilityCode}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Contact Email:</strong> ${contactEmail}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Contact Phone:</strong> ${contactPhone || 'N/A'}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Address:</strong> ${address || 'N/A'}</p>
+                    </div>
+                    <div style="background-color: #fff7ed; border: 1px solid #ffedd5; border-radius: 8px; padding: 12px 15px; margin: 20px 0;">
+                        <p style="margin: 0; color: #c2410c; font-size: 13px; font-weight: 600;">
+                            ℹ️ Status: Pending Super Admin Approval
+                        </p>
+                        <p style="margin: 5px 0 0 0; color: #7c2d12; font-size: 12px;">
+                            Your request is under review by our Super Admin team. Once approved, you will receive an official notification email and your account login credentials will be activated immediately.
+                        </p>
+                    </div>
+                    <p style="font-size: 13px;">If you have any questions or need to submit additional details, please visit our Support Page or contact our team.</p>
+                    <div style="text-align: center; margin-top: 25px;">
+                        <a href="${frontendUrl}/login" style="background-color: #0F766E; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                            Check Status on Appointory
+                        </a>
+                    </div>
+                </div>
+                <div style="background-color: #f1f5f9; padding: 15px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0;">
+                    <p style="margin: 0;">Appointory Healthcare Management System • Support & Compliance</p>
+                </div>
+            </div>
+        `;
+
+        const adminAlertHtml = `
+            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+                <div style="background: linear-gradient(135deg, #c2410c 0%, #ea580c 100%); padding: 25px 20px; text-align: center; color: white;">
+                    <h2 style="margin: 0; font-size: 24px;">🚨 New ${facilityType.toUpperCase()} Approval Request</h2>
+                    <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Action Required by Super Admin</p>
+                </div>
+                <div style="padding: 25px; color: #334155; line-height: 1.6;">
+                    <p>Hello Super Admin,</p>
+                    <p>A new <strong>${facilityType}</strong> has submitted a registration request and is awaiting your approval decision.</p>
+                    <div style="background-color: #f8fafc; border-left: 4px solid #ea580c; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                        <h4 style="margin: 0 0 8px 0; color: #c2410c; font-size: 14px;">🏢 Registration Details</h4>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Name:</strong> ${facilityName}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Type:</strong> ${facilityType.toUpperCase()}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Code:</strong> ${facilityCode}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Contact Person:</strong> ${adminName || 'Admin'}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Email:</strong> ${contactEmail}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Phone:</strong> ${contactPhone || 'N/A'}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Address:</strong> ${address || 'N/A'}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+                    </div>
+                    <p style="font-size: 13px;">Log into your Super Admin Panel to inspect full details and approve or reject this request.</p>
+                    <div style="text-align: center; margin-top: 25px;">
+                        <a href="${frontendUrl}/login" style="background-color: #ea580c; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                            Go to Super Admin Panel
+                        </a>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Send to facility admin
+        await activeTransporter.sendMail({
+            from: `"Appointory Onboarding" <${senderUser}>`,
+            to: contactEmail,
+            subject: `⌛ Registration Received: ${facilityName} (${facilityCode})`,
+            html: facilityHtml
+        });
+
+        // Send self alert to super admin
+        if (superadminEmail) {
+            await activeTransporter.sendMail({
+                from: `"Appointory System Alerts" <${senderUser}>`,
+                to: superadminEmail,
+                subject: `🚨 Super Admin Action Required: New ${facilityType.toUpperCase()} Approval Request - ${facilityName}`,
+                html: adminAlertHtml
+            });
+        }
+        console.log(`✅ Registration pending emails sent for ${facilityName}`);
+    } catch (err) {
+        console.error('Error sending registration pending emails:', err.message);
+    }
+};
+
+/**
+ * Send approval or rejection decision email to facility admin
+ */
+const sendApprovalDecisionEmail = async ({ facilityName, facilityType, facilityCode, contactEmail, status, reason }) => {
+    try {
+        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        if (!activeTransporter || !contactEmail) return;
+
+        const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';
+        const frontendUrl = frontendUrlList.replace(/\/$/, '');
+
+        const isApproved = status === 'approved';
+
+        const html = isApproved ? `
+            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+                <div style="background: linear-gradient(135deg, #10b981 0%, #047857 100%); padding: 25px 20px; text-align: center; color: white;">
+                    <h2 style="margin: 0; font-size: 24px;">🎉 Account Approved!</h2>
+                    <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Appointory ${facilityType.toUpperCase()} Network</p>
+                </div>
+                <div style="padding: 25px; color: #334155; line-height: 1.6;">
+                    <p>Hello <strong>${facilityName}</strong> Administrator,</p>
+                    <p>We are excited to inform you that your registration request for <strong>${facilityName}</strong> (${facilityCode}) has been <strong>APPROVED</strong> by the Super Admin team!</p>
+                    <div style="background-color: #ecfdf5; border-left: 4px solid #10b981; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                        <h4 style="margin: 0 0 8px 0; color: #047857; font-size: 14px;">✅ Account Activated</h4>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Code:</strong> ${facilityCode}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Status:</strong> Active & Live</p>
+                        <p style="margin: 3px 0; font-size: 13px;">You can now log into your dashboard using your registered credentials.</p>
+                    </div>
+                    <div style="text-align: center; margin-top: 25px;">
+                        <a href="${frontendUrl}/login" style="background-color: #10b981; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                            Log In To Dashboard
+                        </a>
+                    </div>
+                </div>
+            </div>
+        ` : `
+            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+                <div style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); padding: 25px 20px; text-align: center; color: white;">
+                    <h2 style="margin: 0; font-size: 24px;">Registration Request Update</h2>
+                    <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Appointory Support Notice</p>
+                </div>
+                <div style="padding: 25px; color: #334155; line-height: 1.6;">
+                    <p>Hello <strong>${facilityName}</strong> Administrator,</p>
+                    <p>We are writing to update you regarding your registration request for <strong>${facilityName}</strong>.</p>
+                    <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                        <h4 style="margin: 0 0 8px 0; color: #b91c1c; font-size: 14px;">❌ Request Not Approved</h4>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Reason:</strong> ${reason || 'Application did not meet operational criteria.'}</p>
+                    </div>
+                    <p style="font-size: 13px;">If you believe this decision was made in error or if you wish to provide updated documentation, please contact our support team.</p>
+                </div>
+            </div>
+        `;
+
+        await activeTransporter.sendMail({
+            from: `"Appointory Support" <${senderUser}>`,
+            to: contactEmail,
+            subject: isApproved ? `🎉 Approved: ${facilityName} is now active!` : `Update regarding your ${facilityType} registration`,
+            html
+        });
+        console.log(`✅ Approval decision email (${status}) sent to ${contactEmail}`);
+    } catch (err) {
+        console.error('Error sending approval decision email:', err.message);
+    }
+};
+
 module.exports = {
     sendEmail,
     sendStaffCredentials,
     initializeEmailService,
     sendSupportConfirmationEmail,
     sendResolutionEmail,
+    sendRegistrationPendingEmails,
+    sendApprovalDecisionEmail,
     isEmailServiceReady: () => emailServiceReady
-};
+};

@@ -42,13 +42,27 @@ exports.registerLab = async (req, res) => {
             phone,
             address,
             subscriptionPlan: 'independent-lab',
-            subscriptionExpiresAt: trialExpiry
+            subscriptionExpiresAt: trialExpiry,
+            approvalStatus: 'pending',
+            isActive: false
         });
+
+        // 📢 Send confirmation email to lab & alert email to Super Admin
+        const { sendRegistrationPendingEmails } = require('../utils/send_email');
+        sendRegistrationPendingEmails({
+            facilityName: lab.labName,
+            facilityType: 'lab',
+            facilityCode: lab.labCode,
+            contactEmail: lab.email,
+            contactPhone: lab.phone,
+            address: lab.address
+        }).catch(err => console.error('Failed to send lab pending emails:', err.message));
 
         res.status(201).json({
             success: true,
-            message: 'Lab registered successfully. You can now log in.',
-            labCode: lab.labCode
+            message: 'Lab registered successfully! Your registration is pending Super Admin approval.',
+            labCode: lab.labCode,
+            approvalStatus: 'pending'
         });
     } catch (error) {
         console.error('❌ Lab Register Error:', error.message);
@@ -71,6 +85,34 @@ exports.loginLab = async (req, res) => {
         const lab = await IndependentLab.findOne({ email: email.toLowerCase() });
         if (!lab) {
             return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+        }
+
+        if (lab.approvalStatus === 'pending') {
+            return res.status(403).json({
+                success: false,
+                isPendingApproval: true,
+                message: 'Your lab registration is pending Super Admin approval. Please wait for approval.',
+                facility: {
+                    name: lab.labName,
+                    code: lab.labCode,
+                    email: lab.email,
+                    type: 'lab',
+                    registeredAt: lab.createdAt
+                }
+            });
+        }
+
+        if (lab.approvalStatus === 'rejected') {
+            return res.status(403).json({
+                success: false,
+                isRejected: true,
+                message: 'Your lab registration request was rejected by Super Admin. Please contact support.',
+                facility: {
+                    name: lab.labName,
+                    code: lab.labCode,
+                    type: 'lab'
+                }
+            });
         }
 
         if (!lab.isActive) {
@@ -102,6 +144,7 @@ exports.loginLab = async (req, res) => {
                 logo: lab.logo
             }
         });
+
     } catch (error) {
         console.error('❌ Lab Login Error:', error.message);
         res.status(500).json({ success: false, message: error.message });

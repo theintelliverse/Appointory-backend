@@ -19,6 +19,8 @@ router.get('/subscription/lab-history', protectLab, ctrl.getFacilityBillingHisto
 
 // Admin-protected actions
 router.get('/facilities', protect, authorize('superadmin'), ctrl.getFacilities);
+router.get('/facility/:id/overview', protect, authorize('superadmin'), ctrl.getFacilityOverview);
+router.patch('/facility/:id/approval', protect, authorize('superadmin'), ctrl.approveOrRejectFacility);
 router.patch('/facility/:id/premium', protect, authorize('superadmin'), ctrl.togglePremium);
 router.patch('/facility/:id/network', protect, authorize('superadmin'), ctrl.toggleNetwork);
 router.patch('/facility/:id/active', protect, authorize('superadmin'), ctrl.toggleActive);

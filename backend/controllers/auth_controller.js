@@ -25,7 +25,9 @@ exports.registerClinic = async (req, res) => {
             address,
             contactPhone,
             subscriptionPlan: 'clinic-only',
-            subscriptionExpiresAt: trialExpiry
+            subscriptionExpiresAt: trialExpiry,
+            approvalStatus: 'pending',
+            isActive: false
         });
 
         const hashedPassword = await hashPassword(password);
@@ -37,13 +39,23 @@ exports.registerClinic = async (req, res) => {
             role: 'admin'
         });
 
-        // 📢 No specific socket room yet as they aren't logged in, 
-        // but we could notify a global "Super Admin" if one existed.
+        // 📢 Send confirmation email to clinic & notification alert email to Super Admin
+        const { sendRegistrationPendingEmails } = require('../utils/send_email');
+        sendRegistrationPendingEmails({
+            facilityName: newClinic.name,
+            facilityType: 'clinic',
+            facilityCode: newClinic.clinicCode,
+            contactEmail: email,
+            contactPhone,
+            address,
+            adminName
+        }).catch(err => console.error('Failed to send clinic pending emails:', err.message));
 
         res.status(201).json({
             success: true,
-            message: "Clinic and Admin registered successfully",
-            clinicCode: newClinic.clinicCode
+            message: "Clinic registered successfully! Your application is under Super Admin approval review.",
+            clinicCode: newClinic.clinicCode,
+            approvalStatus: 'pending'
         });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -81,6 +93,34 @@ exports.loginStaff = async (req, res) => {
         const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
         if (!clinic) return res.status(404).json({ message: "Clinic not found" });
 
+        if (clinic.approvalStatus === 'pending') {
+            return res.status(403).json({
+                success: false,
+                isPendingApproval: true,
+                message: "Your clinic registration is pending Super Admin approval. Please wait for approval.",
+                facility: {
+                    name: clinic.name,
+                    code: clinic.clinicCode,
+                    email,
+                    type: 'clinic',
+                    registeredAt: clinic.createdAt
+                }
+            });
+        }
+
+        if (clinic.approvalStatus === 'rejected') {
+            return res.status(403).json({
+                success: false,
+                isRejected: true,
+                message: "Your clinic registration request was rejected by Super Admin. Please contact support.",
+                facility: {
+                    name: clinic.name,
+                    code: clinic.clinicCode,
+                    type: 'clinic'
+                }
+            });
+        }
+
         const user = await User.findOne({ email, clinicId: clinic._id });
         if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
@@ -109,6 +149,7 @@ exports.loginStaff = async (req, res) => {
                 clinicId: clinic._id
             }
         });
+
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

@@ -15,6 +15,7 @@ const clinicSchema = mongoose.Schema({
     default: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
   },
   isActive: { type: Boolean, default: true },
+  approvalStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
   
   // Billing & Queue Rules Config
   feeConsult: { type: Number, default: 500 },

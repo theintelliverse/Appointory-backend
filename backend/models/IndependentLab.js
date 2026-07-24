@@ -13,6 +13,7 @@ const independentLabSchema = mongoose.Schema({
     address: { type: String, required: true, trim: true },
     logo: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
+    approvalStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
     openingTime: { type: String, default: '08:00' },
     closingTime: { type: String, default: '20:00' },
 
