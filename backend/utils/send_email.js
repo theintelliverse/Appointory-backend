@@ -121,6 +121,17 @@ const getTransporterAndSender = async () => {
     return { activeTransporter: transporter, senderUser: process.env.EMAIL_USER || 'support@appointory.com' };
 };
 
+// Helper to detect dummy or invalid emails (e.g. admin@facility.com, example.com, etc.)
+const isDummyEmail = (email) => {
+    if (!email || typeof email !== 'string') return true;
+    const clean = email.toLowerCase().trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(clean)) return true;
+    const dummyDomains = ['facility.com', 'example.com', 'test.com', 'invalid.com', 'localhost', 'sample.com'];
+    const domain = clean.split('@')[1];
+    return dummyDomains.includes(domain);
+};
+
 const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
     try {
         const { activeTransporter, senderUser } = await getTransporterAndSender();
@@ -159,13 +170,22 @@ const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
             </div>
         `;
 
-        // Send to user
-        await activeTransporter.sendMail({
-            from: `"Appointory Support" <${senderUser}>`,
-            to: ticket.senderEmail,
-            subject: `Support Ticket Received: ${ticket.subject}`,
-            html: userHtml
-        });
+        // Send to user only if senderEmail is a valid non-dummy email
+        if (!isDummyEmail(ticket.senderEmail)) {
+            try {
+                await activeTransporter.sendMail({
+                    from: `"Appointory Support" <${senderUser}>`,
+                    to: ticket.senderEmail,
+                    subject: `Support Ticket Received: ${ticket.subject}`,
+                    html: userHtml
+                });
+                console.log(`✅ Support confirmation email sent to user: ${ticket.senderEmail}`);
+            } catch (userMailErr) {
+                console.error(`⚠️ Failed to send ticket confirmation to user (${ticket.senderEmail}):`, userMailErr.message);
+            }
+        } else {
+            console.log(`ℹ️ Skipped sending ticket confirmation email to dummy/invalid address: ${ticket.senderEmail}`);
+        }
 
         // Send to superadmin if configured
         const finalAdminEmail = superadminEmail || senderUser;
@@ -176,8 +196,8 @@ const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
                 subject: `🚨 Support Ticket: ${ticket.facilityName} - ${ticket.subject}`,
                 html: adminHtml
             });
+            console.log(`✅ Support ticket notification sent to Super Admin (${finalAdminEmail})`);
         }
-        console.log(`✅ Support confirmation emails sent for ticket: ${ticket.subject}`);
     } catch (err) {
         console.error('Error sending support confirmation emails:', err.message);
     }
@@ -185,6 +205,11 @@ const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
 
 const sendResolutionEmail = async (ticket, resolutionText) => {
     try {
+        if (isDummyEmail(ticket.senderEmail)) {
+            console.log(`ℹ️ Skipped sending resolution email to dummy/invalid address: ${ticket.senderEmail}`);
+            return;
+        }
+
         const { activeTransporter, senderUser } = await getTransporterAndSender();
         if (!activeTransporter) {
             throw new Error('Email service is not initialized. Check SMTP configuration.');
@@ -419,7 +444,7 @@ const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facil
 
         const SystemConfig = require('../models/SystemConfig');
         const config = await SystemConfig.findOne();
-        const superadminEmail = config?.superadminEmail || senderUser;
+        const superadminEmail = config?.superadminEmail || 'appointory@gmail.com';
 
         const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';
         const frontendUrl = frontendUrlList.replace(/\/$/, '');
@@ -427,32 +452,37 @@ const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facil
         const facilityHtml = `
             <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
                 <div style="background: linear-gradient(135deg, #0F766E 0%, #1F6FB2 100%); padding: 25px 20px; text-align: center; color: white;">
-                    <h2 style="margin: 0; font-size: 24px;">⌛ Registration Received!</h2>
+                    <h2 style="margin: 0; font-size: 24px;">⌛ Registration Under Review</h2>
                     <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Appointory ${facilityType.toUpperCase()} Onboarding</p>
                 </div>
                 <div style="padding: 25px; color: #334155; line-height: 1.6;">
                     <p>Dear <strong>${adminName || facilityName}</strong>,</p>
-                    <p>Thank you for registering <strong>${facilityName}</strong> on Appointory Healthcare Platform.</p>
-                    <div style="background-color: #f8fafc; border-left: 4px solid #1F6FB2; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                    <p>Thank you for registering <strong>${facilityName}</strong> on the Appointory Healthcare Platform.</p>
+
+                    <div style="background-color: #fff7ed; border-left: 4px solid #ea580c; padding: 16px; border-radius: 8px; margin: 20px 0;">
+                        <h4 style="margin: 0 0 6px 0; color: #c2410c; font-size: 14px; font-weight: bold;">
+                            🔒 Account Status: Pending Approval Required
+                        </h4>
+                        <p style="margin: 0; color: #7c2d12; font-size: 13px; line-height: 1.5;">
+                            Your registration request has been submitted successfully. <strong>Please note: You will only be able to log in and access your dashboard AFTER your account is reviewed and approved by the Super Admin team.</strong>
+                        </p>
+                    </div>
+
+                    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; margin: 20px 0;">
                         <h4 style="margin: 0 0 8px 0; color: #0F766E; font-size: 14px;">📋 Request Summary</h4>
                         <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Name:</strong> ${facilityName}</p>
-                        <p style="margin: 3px 0; font-size: 13px;"><strong>Type:</strong> ${facilityType.toUpperCase()}</p>
-                        <p style="margin: 3px 0; font-size: 13px;"><strong>Code:</strong> ${facilityCode}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Type:</strong> ${facilityType.toUpperCase()}</p>
+                        <p style="margin: 3px 0; font-size: 13px;"><strong>Facility Code:</strong> ${facilityCode}</p>
                         <p style="margin: 3px 0; font-size: 13px;"><strong>Contact Email:</strong> ${contactEmail}</p>
                         <p style="margin: 3px 0; font-size: 13px;"><strong>Contact Phone:</strong> ${contactPhone || 'N/A'}</p>
                         <p style="margin: 3px 0; font-size: 13px;"><strong>Address:</strong> ${address || 'N/A'}</p>
                     </div>
-                    <div style="background-color: #fff7ed; border: 1px solid #ffedd5; border-radius: 8px; padding: 12px 15px; margin: 20px 0;">
-                        <p style="margin: 0; color: #c2410c; font-size: 13px; font-weight: 600;">
-                            ℹ️ Status: Pending Super Admin Approval
-                        </p>
-                        <p style="margin: 5px 0 0 0; color: #7c2d12; font-size: 12px;">
-                            Your request is under review by our Super Admin team. Once approved, you will receive an official notification email and your account login credentials will be activated immediately.
-                        </p>
-                    </div>
-                    <p style="font-size: 13px;">If you have any questions or need to submit additional details, please visit our Support Page or contact our team.</p>
+
+                    <p style="font-size: 13px; color: #475569;">
+                        Once the Super Admin verifies and approves your registration, you will receive an official approval confirmation email and your account login credentials will be activated immediately.
+                    </p>
                     <div style="text-align: center; margin-top: 25px;">
-                        <a href="${frontendUrl}/login" style="background-color: #0F766E; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                        <a href="${frontendUrl}/login" style="background-color: #0F766E; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Check Status on Appointory
                         </a>
                     </div>
@@ -493,24 +523,28 @@ const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facil
             </div>
         `;
 
-        // Send to facility admin
-        await activeTransporter.sendMail({
-            from: `"Appointory Onboarding" <${senderUser}>`,
-            to: contactEmail,
-            subject: `⌛ Registration Received: ${facilityName} (${facilityCode})`,
-            html: facilityHtml
-        });
+        // Send confirmation to facility admin if valid email
+        if (contactEmail && !isDummyEmail(contactEmail)) {
+            await activeTransporter.sendMail({
+                from: `"Appointory Onboarding" <${senderUser}>`,
+                to: contactEmail,
+                subject: `⌛ Registration Received: ${facilityName} (${facilityCode}) — Pending Super Admin Approval`,
+                html: facilityHtml
+            });
+            console.log(`✅ Registration pending email sent to registrant: ${contactEmail}`);
+        }
 
-        // Send self alert to super admin
-        if (superadminEmail) {
+        // Send notification alert email to super admin (appointory@gmail.com)
+        const finalAdminEmail = superadminEmail || 'appointory@gmail.com';
+        if (finalAdminEmail && !isDummyEmail(finalAdminEmail)) {
             await activeTransporter.sendMail({
                 from: `"Appointory System Alerts" <${senderUser}>`,
-                to: superadminEmail,
+                to: finalAdminEmail,
                 subject: `🚨 Super Admin Action Required: New ${facilityType.toUpperCase()} Approval Request - ${facilityName}`,
                 html: adminAlertHtml
             });
+            console.log(`✅ Registration alert email sent to Super Admin: ${finalAdminEmail}`);
         }
-        console.log(`✅ Registration pending emails sent for ${facilityName}`);
     } catch (err) {
         console.error('Error sending registration pending emails:', err.message);
     }
@@ -590,4 +624,4 @@ module.exports = {
     sendRegistrationPendingEmails,
     sendApprovalDecisionEmail,
     isEmailServiceReady: () => emailServiceReady
-};
+};

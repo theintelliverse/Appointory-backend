@@ -24,7 +24,7 @@ const systemConfigSchema = mongoose.Schema({
     smtpUser: { type: String, default: '' },
     smtpPass: { type: String, default: '' },
     smtpSecure: { type: Boolean, default: false },
-    superadminEmail: { type: String, default: '' }
+    superadminEmail: { type: String, default: 'appointory@gmail.com' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('SystemConfig', systemConfigSchema);
