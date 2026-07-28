@@ -3,6 +3,9 @@ const Clinic = require('../models/Clinic');
 const StaffSession = require('../models/StaffSession');
 const { generateToken, hashPassword, comparePassword } = require('../utils/auth_helper');
 const { sendEmail } = require('../utils/send_email');
+const sendSMS = require('../utils/send_sms');
+
+let registrationOtpStore = {};
 
 /**
  * @desc    Register a new Clinic and its primary Admin
@@ -10,7 +13,70 @@ const { sendEmail } = require('../utils/send_email');
  */
 exports.registerClinic = async (req, res) => {
     try {
-        const { clinicName, clinicCode, address, contactPhone, adminName, email, password } = req.body;
+        const { clinicName, clinicCode, address, contactPhone, adminName, email, password, emailOtp, smsOtp } = req.body;
+
+        // Validation: Unique clinic code check
+        const existingClinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
+        if (existingClinic) {
+            return res.status(400).json({ success: false, message: "Clinic Code already taken. Choose a different one." });
+        }
+
+        // Validation: Unique email check (case-insensitive)
+        const existingAdmin = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') } });
+        if (existingAdmin) {
+            return res.status(400).json({ success: false, message: "Email is already registered." });
+        }
+
+        const cleanPhone = contactPhone.replace(/\D/g, '').slice(-10);
+
+        if (!emailOtp || !smsOtp) {
+            const generatedEmailOtp = Math.floor(100000 + Math.random() * 900000).toString();
+            const generatedSmsOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+            registrationOtpStore[email.toLowerCase()] = {
+                emailOtp: generatedEmailOtp,
+                smsOtp: generatedSmsOtp,
+                expires: Date.now() + 600000 // 10 minutes
+            };
+
+            // Send Email verification code
+            const emailSubject = "🏥 Appointory Clinic Onboarding - Email Verification Code";
+            const emailHtml = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; padding: 25px;">
+                    <h2 style="color: #0F766E; margin-top: 0;">Verify Your Clinic Registration</h2>
+                    <p>Hello ${adminName || 'Admin'},</p>
+                    <p>Thank you for registering <strong>${clinicName}</strong> on Appointory.</p>
+                    <div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center;">
+                        <p style="margin: 0; font-size: 14px; color: #475569;">Your Email Verification Code is:</p>
+                        <h1 style="margin: 10px 0 0 0; color: #0F766E; font-size: 32px; letter-spacing: 4px;">${generatedEmailOtp}</h1>
+                        <p style="margin: 5px 0 0 0; font-size: 12px; color: #94a3b8;">Valid for 10 minutes</p>
+                    </div>
+                </div>
+            `;
+            await sendEmail(email, emailSubject, emailHtml);
+
+            // Send SMS verification code
+            const smsMessage = `Your Appointory clinic registration SMS verification code is: ${generatedSmsOtp}. Valid for 10 minutes.`;
+            await sendSMS(cleanPhone, smsMessage);
+
+            return res.status(200).json({
+                success: true,
+                verificationRequired: true,
+                message: "Verification codes sent to your email and phone number.",
+                debugOtp: process.env.NODE_ENV === 'development' ? { emailOtp: generatedEmailOtp, smsOtp: generatedSmsOtp } : undefined
+            });
+        }
+
+        const storedOtp = registrationOtpStore[email.toLowerCase()];
+        if (!storedOtp || storedOtp.expires < Date.now()) {
+            return res.status(400).json({ success: false, message: "Verification codes expired or invalid. Please request new codes." });
+        }
+
+        if (storedOtp.emailOtp !== emailOtp || storedOtp.smsOtp !== smsOtp) {
+            return res.status(400).json({ success: false, message: "Invalid email or SMS verification code. Please check and try again." });
+        }
+
+        delete registrationOtpStore[email.toLowerCase()];
 
         const SystemConfig = require('../models/SystemConfig');
         const systemConfig = await SystemConfig.findOne();
@@ -23,7 +89,7 @@ exports.registerClinic = async (req, res) => {
             name: clinicName,
             clinicCode: clinicCode.toUpperCase(),
             address,
-            contactPhone,
+            contactPhone: cleanPhone,
             subscriptionPlan: 'clinic-only',
             subscriptionExpiresAt: trialExpiry,
             approvalStatus: 'pending',
@@ -34,7 +100,7 @@ exports.registerClinic = async (req, res) => {
         const adminUser = await User.create({
             clinicId: newClinic._id,
             name: adminName,
-            email,
+            email: email.toLowerCase(),
             password: hashedPassword,
             role: 'admin'
         });
@@ -45,8 +111,8 @@ exports.registerClinic = async (req, res) => {
             facilityName: newClinic.name,
             facilityType: 'clinic',
             facilityCode: newClinic.clinicCode,
-            contactEmail: email,
-            contactPhone,
+            contactEmail: email.toLowerCase(),
+            contactPhone: cleanPhone,
             address,
             adminName
         }).catch(err => console.error('Failed to send clinic pending emails:', err.message));
@@ -71,7 +137,7 @@ exports.loginStaff = async (req, res) => {
 
         // If no clinic code is provided, check for a Super Admin
         if (!clinicCode) {
-            const user = await User.findOne({ email, role: 'superadmin' });
+            const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, role: 'superadmin' });
             if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
             const isMatch = await comparePassword(password, user.password);
@@ -121,7 +187,7 @@ exports.loginStaff = async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ email, clinicId: clinic._id });
+        const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
         if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
         const isMatch = await comparePassword(password, user.password);
@@ -272,7 +338,7 @@ exports.forgotPassword = async (req, res) => {
         }
 
         // Find user
-        const user = await User.findOne({ email, clinicId: clinic._id });
+        const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
         if (!user) {
             return res.status(404).json({
                 success: false,
@@ -478,7 +544,7 @@ exports.resetPassword = async (req, res) => {
         }
 
         // Find user
-        const user = await User.findOne({ email, clinicId: clinic._id });
+        const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
         if (!user) {
             return res.status(404).json({
                 success: false,

@@ -655,14 +655,16 @@ exports.patientResetPassword = async (req, res) => {
             return res.status(404).json({ success: false, message: "Patient not found" });
         }
 
-        // Note: Patient model doesn't have password field as they use OTP
-        // This is for future-proofing if they add password-based login
-        // For now, just confirm OTP success
+        // Hash and update the password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        patient.passwordHash = hashedPassword;
+        await patient.save();
+
         delete otpStore[cleanPhone];
 
         res.status(200).json({
             success: true,
-            message: "Password request verified. Please login with OTP.",
+            message: "Password reset successfully. You can now login with your new password.",
             patientPhone: cleanPhone
         });
     } catch (error) {

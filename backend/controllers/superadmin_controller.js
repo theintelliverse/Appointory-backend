@@ -40,7 +40,7 @@ exports.getFacilities = async (req, res) => {
         const clinicsData = await Promise.all(clinics.map(async (c) => {
             const staffCount = await User.countDocuments({ clinicId: c._id });
             const patientCount = await Patient.countDocuments({ visitedClinics: c._id });
-
+            
             // Total revenue contributed by this clinic
             const facilityPayments = payments.filter(p => p.facilityId && p.facilityId._id.toString() === c._id.toString());
             const revenueContributed = facilityPayments.reduce((acc, p) => acc + p.amount, 0);
@@ -56,7 +56,7 @@ exports.getFacilities = async (req, res) => {
         const labsData = await Promise.all(labs.map(async (l) => {
             const reportCount = await ExternalLabRequest.countDocuments({ labId: l._id });
             const staffCount = 1; // Standalone tech
-
+            
             // Total revenue contributed by this lab
             const facilityPayments = payments.filter(p => p.facilityId && p.facilityId._id.toString() === l._id.toString());
             const revenueContributed = facilityPayments.reduce((acc, p) => acc + p.amount, 0);
@@ -160,7 +160,7 @@ exports.giftSubscription = async (req, res) => {
         if (type === 'clinic') {
             const clinic = await Clinic.findById(id);
             if (!clinic) return res.status(404).json({ success: false, message: 'Clinic not found' });
-
+            
             if (clinic.subscriptionExpiresAt && clinic.subscriptionExpiresAt > new Date()) {
                 expiresAt = new Date(clinic.subscriptionExpiresAt.getTime() + additionMs);
             }
@@ -172,7 +172,7 @@ exports.giftSubscription = async (req, res) => {
         } else {
             const lab = await IndependentLab.findById(id);
             if (!lab) return res.status(404).json({ success: false, message: 'Lab not found' });
-
+            
             if (lab.subscriptionExpiresAt && lab.subscriptionExpiresAt > new Date()) {
                 expiresAt = new Date(lab.subscriptionExpiresAt.getTime() + additionMs);
             }
@@ -274,9 +274,9 @@ exports.getSystemConfig = async (req, res) => {
 // PATCH /api/superadmin/config
 exports.updateSystemConfig = async (req, res) => {
     try {
-        const {
-            isMaintenanceMode,
-            maintenanceMessage,
+        const { 
+            isMaintenanceMode, 
+            maintenanceMessage, 
             isSubscriptionEnforced,
             trialPeriodDays,
             legacyDiscountPercentage,
@@ -468,7 +468,7 @@ exports.generateRazorpayOrder = async (req, res) => {
         // 1. Calculate Base Price
         let basePrice = 0;
         const planDoc = await SubscriptionPlan.findOne({ key: plan });
-
+        
         if (customSubscriptionPrice !== undefined && customSubscriptionPrice !== null) {
             basePrice = customSubscriptionPrice;
         } else if (planDoc) {
@@ -499,7 +499,7 @@ exports.generateRazorpayOrder = async (req, res) => {
         } else {
             isOldUser = (Date.now() - new Date(createdAt).getTime()) > legacyThresholdDays * 24 * 60 * 60 * 1000;
         }
-
+        
         let isLegacyDiscountActive = true;
         const now = new Date();
         if (legacyStart && now < new Date(legacyStart)) isLegacyDiscountActive = false;
@@ -742,7 +742,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
                                     <td style="padding: 4px 0; text-align: right; font-weight: 600;">₹${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                 </tr>
                                 ${configDoc.isGstEnabled ? (
-                        isLocalState ? `
+                                    isLocalState ? `
                                         <tr>
                                             <td style="padding: 4px 0;">Central GST (CGST ${cgstRate}%):</td>
                                             <td style="padding: 4px 0; text-align: right; font-weight: 600;">₹${cgstAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
@@ -757,7 +757,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
                                             <td style="padding: 4px 0; text-align: right; font-weight: 600;">₹${igstAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                         </tr>
                                     `
-                    ) : `
+                                ) : `
                                     <tr>
                                         <td style="padding: 4px 0;">GST / Service Tax (Disabled):</td>
                                         <td style="padding: 4px 0; text-align: right; font-weight: 600;">₹0.00</td>
@@ -946,7 +946,7 @@ exports.updateFacilitySubscription = async (req, res) => {
         if (type === 'clinic') {
             const clinic = await Clinic.findById(id);
             if (!clinic) return res.status(404).json({ success: false, message: 'Clinic not found' });
-
+            
             if (subscriptionPlan !== undefined) clinic.subscriptionPlan = subscriptionPlan;
             if (subscriptionExpiresAt !== undefined) {
                 clinic.subscriptionExpiresAt = subscriptionExpiresAt ? new Date(subscriptionExpiresAt) : null;
@@ -957,7 +957,7 @@ exports.updateFacilitySubscription = async (req, res) => {
         } else {
             const lab = await IndependentLab.findById(id);
             if (!lab) return res.status(404).json({ success: false, message: 'Lab not found' });
-
+            
             if (subscriptionPlan !== undefined) lab.subscriptionPlan = subscriptionPlan;
             if (subscriptionExpiresAt !== undefined) {
                 lab.subscriptionExpiresAt = subscriptionExpiresAt ? new Date(subscriptionExpiresAt) : null;

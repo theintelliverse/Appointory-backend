@@ -92,30 +92,32 @@ if (validateEmailConfig()) {
 const { decrypt } = require('./crypto_helper');
 
 // Helper to resolve transporter dynamically
-const getTransporterAndSender = async () => {
-    try {
-        const SystemConfig = require('../models/SystemConfig');
-        const config = await SystemConfig.findOne();
-        if (config && config.smtpUser && config.smtpPass) {
-            const decryptedPass = decrypt(config.smtpPass);
-            const activeTransporter = nodemailer.createTransport({
-                host: config.smtpHost || 'smtp.gmail.com',
-                port: config.smtpPort || 587,
-                secure: config.smtpSecure || false,
-                auth: {
-                    user: config.smtpUser,
-                    pass: decryptedPass,
-                },
-                tls: {
-                    rejectUnauthorized: false
-                },
-                connectionTimeout: 10000,
-                socketTimeout: 10000,
-            });
-            return { activeTransporter, senderUser: config.smtpUser };
+const getTransporterAndSender = async (useSystemDefault = false) => {
+    if (!useSystemDefault) {
+        try {
+            const SystemConfig = require('../models/SystemConfig');
+            const config = await SystemConfig.findOne();
+            if (config && config.smtpUser && config.smtpPass) {
+                const decryptedPass = decrypt(config.smtpPass);
+                const activeTransporter = nodemailer.createTransport({
+                    host: config.smtpHost || 'smtp.gmail.com',
+                    port: config.smtpPort || 587,
+                    secure: config.smtpSecure || false,
+                    auth: {
+                        user: config.smtpUser,
+                        pass: decryptedPass,
+                    },
+                    tls: {
+                        rejectUnauthorized: false
+                    },
+                    connectionTimeout: 10000,
+                    socketTimeout: 10000,
+                });
+                return { activeTransporter, senderUser: config.smtpUser };
+            }
+        } catch (err) {
+            console.error('Error fetching dynamic SMTP config, falling back:', err.message);
         }
-    } catch (err) {
-        console.error('Error fetching dynamic SMTP config, falling back:', err.message);
     }
     
     return { activeTransporter: transporter, senderUser: process.env.EMAIL_USER || 'support@appointory.com' };
@@ -134,7 +136,7 @@ const isDummyEmail = (email) => {
 
 const sendSupportConfirmationEmail = async (ticket, superadminEmail) => {
     try {
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(false);
         if (!activeTransporter) {
             throw new Error('Email service is not initialized. Check SMTP configuration.');
         }
@@ -210,7 +212,7 @@ const sendResolutionEmail = async (ticket, resolutionText) => {
             return;
         }
 
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(false);
         if (!activeTransporter) {
             throw new Error('Email service is not initialized. Check SMTP configuration.');
         }
@@ -257,7 +259,7 @@ const sendStaffCredentials = async (email, password, name, role, clinicName) => 
             throw new Error('Missing required fields: email, password, name, role, clinicName');
         }
 
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(true);
 
         // Check if transporter is initialized
         if (!activeTransporter) {
@@ -397,7 +399,7 @@ const sendEmail = async (email, subject, html, attachments = []) => {
             throw new Error(`Invalid email format: ${email}`);
         }
 
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(true);
 
         // Check if transporter is initialized
         if (!activeTransporter) {
@@ -439,7 +441,7 @@ const sendEmail = async (email, subject, html, attachments = []) => {
  */
 const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facilityCode, contactEmail, contactPhone, address, adminName }) => {
     try {
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(true);
         if (!activeTransporter) return;
 
         const SystemConfig = require('../models/SystemConfig');
@@ -555,7 +557,7 @@ const sendRegistrationPendingEmails = async ({ facilityName, facilityType, facil
  */
 const sendApprovalDecisionEmail = async ({ facilityName, facilityType, facilityCode, contactEmail, status, reason }) => {
     try {
-        const { activeTransporter, senderUser } = await getTransporterAndSender();
+        const { activeTransporter, senderUser } = await getTransporterAndSender(true);
         if (!activeTransporter || !contactEmail) return;
 
         const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';

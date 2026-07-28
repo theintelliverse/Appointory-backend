@@ -1,7 +1,10 @@
 const IndependentLab = require('../models/IndependentLab');
 const { generateToken, hashPassword, comparePassword } = require('../utils/auth_helper');
 const { sendEmail } = require('../utils/send_email');
+const sendSMS = require('../utils/send_sms');
 const crypto = require('crypto');
+
+let registrationOtpStore = {};
 
 /**
  * @desc    Register a new Independent Lab
@@ -9,7 +12,7 @@ const crypto = require('crypto');
  */
 exports.registerLab = async (req, res) => {
     try {
-        const { labName, labCode, email, password, phone, address } = req.body;
+        const { labName, labCode, email, password, phone, address, emailOtp, smsOtp } = req.body;
 
         if (!labName || !labCode || !email || !password || !phone || !address) {
             return res.status(400).json({ success: false, message: 'All fields are required.' });
@@ -25,6 +28,57 @@ exports.registerLab = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Email is already registered.' });
         }
 
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+
+        if (!emailOtp || !smsOtp) {
+            const generatedEmailOtp = Math.floor(100000 + Math.random() * 900000).toString();
+            const generatedSmsOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+            registrationOtpStore[email.toLowerCase()] = {
+                emailOtp: generatedEmailOtp,
+                smsOtp: generatedSmsOtp,
+                expires: Date.now() + 600000 // 10 minutes
+            };
+
+            // Send Email verification code
+            const emailSubject = "🧪 Appointory Lab Onboarding - Email Verification Code";
+            const emailHtml = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; padding: 25px;">
+                    <h2 style="color: #1B6CA8; margin-top: 0;">Verify Your Lab Registration</h2>
+                    <p>Hello,</p>
+                    <p>Thank you for registering <strong>${labName}</strong> on Appointory Lab Network.</p>
+                    <div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center;">
+                        <p style="margin: 0; font-size: 14px; color: #475569;">Your Email Verification Code is:</p>
+                        <h1 style="margin: 10px 0 0 0; color: #1B6CA8; font-size: 32px; letter-spacing: 4px;">${generatedEmailOtp}</h1>
+                        <p style="margin: 5px 0 0 0; font-size: 12px; color: #94a3b8;">Valid for 10 minutes</p>
+                    </div>
+                </div>
+            `;
+            await sendEmail(email, emailSubject, emailHtml);
+
+            // Send SMS verification code
+            const smsMessage = `Your Appointory lab registration SMS verification code is: ${generatedSmsOtp}. Valid for 10 minutes.`;
+            await sendSMS(cleanPhone, smsMessage);
+
+            return res.status(200).json({
+                success: true,
+                verificationRequired: true,
+                message: "Verification codes sent to your email and phone number.",
+                debugOtp: process.env.NODE_ENV === 'development' ? { emailOtp: generatedEmailOtp, smsOtp: generatedSmsOtp } : undefined
+            });
+        }
+
+        const storedOtp = registrationOtpStore[email.toLowerCase()];
+        if (!storedOtp || storedOtp.expires < Date.now()) {
+            return res.status(400).json({ success: false, message: "Verification codes expired or invalid. Please request new codes." });
+        }
+
+        if (storedOtp.emailOtp !== emailOtp || storedOtp.smsOtp !== smsOtp) {
+            return res.status(400).json({ success: false, message: "Invalid email or SMS verification code. Please check and try again." });
+        }
+
+        delete registrationOtpStore[email.toLowerCase()];
+
         const hashedPassword = await hashPassword(password);
 
         const SystemConfig = require('../models/SystemConfig');
@@ -39,7 +93,7 @@ exports.registerLab = async (req, res) => {
             labCode: labCode.toUpperCase(),
             email: email.toLowerCase(),
             password: hashedPassword,
-            phone,
+            phone: cleanPhone,
             address,
             subscriptionPlan: 'independent-lab',
             subscriptionExpiresAt: trialExpiry,
