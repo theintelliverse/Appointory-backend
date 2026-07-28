@@ -998,6 +998,11 @@ exports.getFacilityOverview = async (req, res) => {
             // Members (Doctors, Receptionists, Staff)
             members = await User.find({ clinicId: id }).select('-password').sort({ createdAt: -1 });
 
+            const adminUser = members.find(m => m.role === 'admin');
+            const facilityObj = facilityDoc.toObject();
+            facilityObj.email = adminUser ? adminUser.email : '';
+            facilityDoc = facilityObj;
+
             // Patients
             patients = await Patient.find({ visitedClinics: id }).sort({ updatedAt: -1 }).limit(100);
 
@@ -1284,4 +1289,41 @@ exports.approveOrRejectFacility = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// POST /api/superadmin/facility/:id/send-email
+exports.sendFacilityEmail = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { type, email, subject, body } = req.body;
+
+        if (!subject || !body) {
+            return res.status(400).json({ success: false, message: 'Subject and body are required.' });
+        }
+
+        let recipientEmail = email;
+
+        // If email isn't provided, fetch it
+        if (!recipientEmail) {
+            if (type === 'clinic') {
+                const admin = await User.findOne({ clinicId: id, role: 'admin' });
+                if (admin) recipientEmail = admin.email;
+            } else {
+                const lab = await IndependentLab.findById(id);
+                if (lab) recipientEmail = lab.email;
+            }
+        }
+
+        if (!recipientEmail) {
+            return res.status(400).json({ success: false, message: 'Recipient email not found for this facility.' });
+        }
+
+        const { sendEmail } = require('../utils/send_email');
+        await sendEmail(recipientEmail, subject, body);
+
+        res.status(200).json({ success: true, message: `Email sent successfully to ${recipientEmail}` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 
