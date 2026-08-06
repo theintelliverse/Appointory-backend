@@ -29,8 +29,8 @@ const createTransporter = () => {
             rejectUnauthorized: false
         },
         // Add connection timeout to prevent hanging
-        connectionTimeout: 10000,
-        socketTimeout: 10000,
+        connectionTimeout: 50000,
+        socketTimeout: 50000,
         lookup: (hostname, options, callback) => {
             dns.lookup(hostname, { family: 4 }, callback);
         }
