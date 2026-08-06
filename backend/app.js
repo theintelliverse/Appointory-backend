@@ -321,10 +321,8 @@ if (!isVercel && require.main === module) {
         }
 
         // 🔑 IMPORTANT: Listen using 'server', not 'app'
-        server.listen(PORT, () => {
-            if (!isProduction) {
-                console.log(`🚀 Server & WebSockets running on port ${PORT}`);
-            }
+        server.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 Server & WebSockets running on port ${PORT} (Production: ${isProduction})`);
         });
     };
 
