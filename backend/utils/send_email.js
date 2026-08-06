@@ -30,6 +30,7 @@ const createTransporter = () => {
         // Add connection timeout to prevent hanging
         connectionTimeout: 10000,
         socketTimeout: 10000,
+        family: 4, // Force IPv4 to prevent ENETUNREACH in IPv6-disabled/restricted cloud networks
     });
 };
 
@@ -112,6 +113,7 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
                     },
                     connectionTimeout: 10000,
                     socketTimeout: 10000,
+                    family: 4, // Force IPv4 to prevent ENETUNREACH
                 });
                 return { activeTransporter, senderUser: config.smtpUser };
             }
