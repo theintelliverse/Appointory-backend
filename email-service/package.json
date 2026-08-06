@@ -1,0 +1,15 @@
+{
+  "name": "appointory-email-service",
+  "version": "1.0.0",
+  "description": "Standalone Vercel Serverless Function for sending emails via SMTP/Gmail",
+  "main": "api/send.js",
+  "scripts": {
+    "start": "node api/send.js"
+  },
+  "dependencies": {
+    "nodemailer": "^9.0.3"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.0.0"
+  }
+}
