@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
 
 // ✅ VALIDATION: Check if Gmail credentials are configured
 const validateEmailConfig = () => {
@@ -30,7 +31,9 @@ const createTransporter = () => {
         // Add connection timeout to prevent hanging
         connectionTimeout: 10000,
         socketTimeout: 10000,
-        family: 4, // Force IPv4 to prevent ENETUNREACH in IPv6-disabled/restricted cloud networks
+        lookup: (hostname, options, callback) => {
+            dns.lookup(hostname, { family: 4 }, callback);
+        }
     });
 };
 
@@ -113,7 +116,9 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
                     },
                     connectionTimeout: 10000,
                     socketTimeout: 10000,
-                    family: 4, // Force IPv4 to prevent ENETUNREACH
+                    lookup: (hostname, options, callback) => {
+                        dns.lookup(hostname, { family: 4 }, callback);
+                    }
                 });
                 return { activeTransporter, senderUser: config.smtpUser };
             }
