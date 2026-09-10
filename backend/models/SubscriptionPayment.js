@@ -23,6 +23,14 @@ const subscriptionPaymentSchema = mongoose.Schema({
     razorpayPaymentId: { type: String },
     razorpaySignature: { type: String },
     plan: { type: String, required: true },
+    // Modular service tracking
+    serviceType: {
+        type: String,
+        enum: ['full', 'billing', 'messaging', 'appointments', 'lab-connect', 'analytics', 'health-locker', 'bundle'],
+        default: 'full'
+    },
+    activatedServices: { type: [String], default: [] }, // List of services activated by this payment
+    durationDays: { type: Number, default: 30 },
     billingDate: { type: Date, default: Date.now }
 }, { timestamps: true });
 

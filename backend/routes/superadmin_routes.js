@@ -48,4 +48,8 @@ router.post('/plans', protect, authorize('superadmin'), ctrl.createPlan);
 router.put('/plans/:id', protect, authorize('superadmin'), ctrl.updatePlan);
 router.delete('/plans/:id', protect, authorize('superadmin'), ctrl.deletePlan);
 
+// Service Catalog & Facility Service Toggles
+router.get('/service-catalog', ctrl.getServiceCatalog);
+router.patch('/facility/:id/services', protect, authorize('superadmin'), ctrl.toggleFacilityServices);
+
 module.exports = router;

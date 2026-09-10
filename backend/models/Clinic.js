@@ -36,6 +36,18 @@ const clinicSchema = mongoose.Schema({
     maxQueues: { type: Number, default: null }
   },
 
+  // Modular Service Activations
+  activeServices: [{
+    service: {
+      type: String,
+      enum: ['billing', 'messaging', 'appointments', 'lab-connect', 'analytics', 'health-locker'],
+      required: true
+    },
+    activatedAt: { type: Date, default: Date.now },
+    expiresAt: { type: Date, required: true },
+    planId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan' }
+  }],
+
   // 🌐 SEO & Public Profile Management
   slug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
   bio: { type: String, default: '' },

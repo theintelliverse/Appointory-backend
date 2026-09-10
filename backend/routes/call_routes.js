@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 const callController = require('../controllers/call_controller');
 const { protect } = require('../utils/auth_middleware');
+const { requireService } = require('../utils/service_gate_middleware');
 
 /**
  * 📞 DOCTOR CALL ROUTES
  */
 
-// ✅ Initiate call and send SMS notification
-router.post('/initiate-call', protect, callController.initiateCall);
+// ✅ Initiate call and send SMS notification (requires messaging service)
+router.post('/initiate-call', protect, requireService('messaging'), callController.initiateCall);
 
 // ✅ Patient confirms call
 router.post('/confirm-call/:callId', callController.confirmCall);

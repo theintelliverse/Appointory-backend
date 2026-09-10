@@ -29,6 +29,18 @@ const independentLabSchema = mongoose.Schema({
         maxQueues: { type: Number, default: null }
     },
 
+    // Modular Service Activations
+    activeServices: [{
+        service: {
+            type: String,
+            enum: ['billing', 'messaging', 'appointments', 'lab-connect', 'analytics', 'health-locker'],
+            required: true
+        },
+        activatedAt: { type: Date, default: Date.now },
+        expiresAt: { type: Date, required: true },
+        planId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan' }
+    }],
+
     // Password Reset
     resetToken: { type: String, default: null },
     resetTokenExpiry: { type: Date, default: null },

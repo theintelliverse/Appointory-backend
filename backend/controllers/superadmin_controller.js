@@ -617,6 +617,33 @@ exports.verifyRazorpayPayment = async (req, res) => {
         const additionMs = durationDays * 24 * 60 * 60 * 1000;
         let expiresAt = new Date(Date.now() + additionMs);
 
+        const serviceType = planDoc ? planDoc.serviceType : 'full';
+        const servicesToActivate = serviceType === 'full'
+            ? ['billing', 'messaging', 'appointments', 'lab-connect', 'analytics', 'health-locker']
+            : (serviceType === 'bundle' ? (planDoc.includedServices || []) : [serviceType]);
+
+        const updateServicesArray = (facility) => {
+            if (!facility.activeServices) facility.activeServices = [];
+            servicesToActivate.forEach(svc => {
+                const existingIdx = facility.activeServices.findIndex(s => s.service === svc);
+                let svcExpires = new Date(Date.now() + additionMs);
+                if (existingIdx >= 0 && facility.activeServices[existingIdx].expiresAt > new Date()) {
+                    svcExpires = new Date(facility.activeServices[existingIdx].expiresAt.getTime() + additionMs);
+                }
+                if (existingIdx >= 0) {
+                    facility.activeServices[existingIdx].expiresAt = svcExpires;
+                    facility.activeServices[existingIdx].planId = planDoc ? planDoc._id : null;
+                } else {
+                    facility.activeServices.push({
+                        service: svc,
+                        activatedAt: new Date(),
+                        expiresAt: svcExpires,
+                        planId: planDoc ? planDoc._id : null
+                    });
+                }
+            });
+        };
+
         let facilityName = '';
         let facilityEmail = '';
         let facilityCode = '';
@@ -626,11 +653,14 @@ exports.verifyRazorpayPayment = async (req, res) => {
             const clinic = await Clinic.findById(payment.facilityId);
             if (!clinic) return res.status(404).json({ success: false, message: 'Clinic not found' });
 
-            if (clinic.subscriptionExpiresAt && clinic.subscriptionExpiresAt > new Date()) {
-                expiresAt = new Date(clinic.subscriptionExpiresAt.getTime() + additionMs);
+            if (serviceType === 'full') {
+                if (clinic.subscriptionExpiresAt && clinic.subscriptionExpiresAt > new Date()) {
+                    expiresAt = new Date(clinic.subscriptionExpiresAt.getTime() + additionMs);
+                }
+                clinic.subscriptionExpiresAt = expiresAt;
+                clinic.subscriptionPlan = payment.plan;
             }
-            clinic.subscriptionExpiresAt = expiresAt;
-            clinic.subscriptionPlan = payment.plan;
+            updateServicesArray(clinic);
             clinic.isPremium = true;
             await clinic.save();
             facilityName = clinic.name;
@@ -641,11 +671,14 @@ exports.verifyRazorpayPayment = async (req, res) => {
             const lab = await IndependentLab.findById(payment.facilityId);
             if (!lab) return res.status(404).json({ success: false, message: 'Lab not found' });
 
-            if (lab.subscriptionExpiresAt && lab.subscriptionExpiresAt > new Date()) {
-                expiresAt = new Date(lab.subscriptionExpiresAt.getTime() + additionMs);
+            if (serviceType === 'full') {
+                if (lab.subscriptionExpiresAt && lab.subscriptionExpiresAt > new Date()) {
+                    expiresAt = new Date(lab.subscriptionExpiresAt.getTime() + additionMs);
+                }
+                lab.subscriptionExpiresAt = expiresAt;
+                lab.subscriptionPlan = payment.plan;
             }
-            lab.subscriptionExpiresAt = expiresAt;
-            lab.subscriptionPlan = payment.plan;
+            updateServicesArray(lab);
             lab.isPremium = true;
             await lab.save();
             facilityName = lab.labName;
@@ -885,9 +918,11 @@ exports.getPublicPlans = async (req, res) => {
 // POST /api/superadmin/plans (Admin only)
 exports.createPlan = async (req, res) => {
     try {
-        const { name, key, price, durationDays, facilityType, features, trafficLimits, isCustomPlan, isActive } = req.body;
+        const { name, key, price, durationDays, facilityType, features, trafficLimits, isCustomPlan, isActive, serviceType, includedServices } = req.body;
         const plan = await SubscriptionPlan.create({
-            name, key, price, durationDays, facilityType, features, trafficLimits, isCustomPlan, isActive
+            name, key, price, durationDays, facilityType, features, trafficLimits, isCustomPlan, isActive,
+            serviceType: serviceType || 'full',
+            includedServices: includedServices || []
         });
         res.status(201).json({ success: true, data: plan });
     } catch (error) {
@@ -917,6 +952,71 @@ exports.deletePlan = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// GET /api/superadmin/service-catalog
+exports.getServiceCatalog = async (req, res) => {
+    try {
+        const SERVICES = [
+            { key: 'billing', name: 'Patient Invoicing & Billing', description: 'Create GST invoices, receipt PDFs, collection tracking.' },
+            { key: 'messaging', name: 'WhatsApp & SMS Notifications', description: 'Automated appointment reminders, lab alerts, broadcast msgs.' },
+            { key: 'appointments', name: 'Online Booking Engine', description: 'Patient appointment portal, queue tracking, slot booking.' },
+            { key: 'lab-connect', name: 'Lab Integration & Diagnostic Routing', description: 'Connect with independent labs, order diagnostic tests.' },
+            { key: 'analytics', name: 'Advanced Clinic Analytics', description: 'Revenue graphs, patient retention analytics, footfall metrics.' },
+            { key: 'health-locker', name: 'Patient Health Record Locker', description: 'Digital vault for prescription storage & medical history.' },
+        ];
+
+        const activePlans = await SubscriptionPlan.find({ isActive: true });
+        const catalog = SERVICES.map(svc => {
+            const plans = activePlans.filter(p => p.serviceType === svc.key || (p.serviceType === 'bundle' && p.includedServices.includes(svc.key)));
+            return {
+                ...svc,
+                plans
+            };
+        });
+
+        res.status(200).json({ success: true, data: catalog });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// PATCH /api/superadmin/facility/:id/services
+exports.toggleFacilityServices = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { type, service, active, durationDays } = req.body;
+
+        const Model = type === 'lab' ? IndependentLab : Clinic;
+        const facility = await Model.findById(id);
+        if (!facility) return res.status(404).json({ success: false, message: 'Facility not found' });
+
+        if (!facility.activeServices) facility.activeServices = [];
+
+        const existingIdx = facility.activeServices.findIndex(s => s.service === service);
+        const expiresAt = active ? new Date(Date.now() + (durationDays || 30) * 24 * 60 * 60 * 1000) : new Date(0);
+
+        if (existingIdx >= 0) {
+            if (active) {
+                facility.activeServices[existingIdx].expiresAt = expiresAt;
+                facility.activeServices[existingIdx].activatedAt = new Date();
+            } else {
+                facility.activeServices.splice(existingIdx, 1);
+            }
+        } else if (active) {
+            facility.activeServices.push({
+                service,
+                activatedAt: new Date(),
+                expiresAt
+            });
+        }
+
+        await facility.save();
+        res.status(200).json({ success: true, message: `Service '${service}' ${active ? 'activated' : 'deactivated'} successfully!`, activeServices: facility.activeServices });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 
 // PATCH /api/superadmin/facility/:id/custom-limits (Admin only)
 exports.setCustomLimits = async (req, res) => {

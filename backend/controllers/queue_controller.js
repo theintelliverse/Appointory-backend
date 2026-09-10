@@ -1,4 +1,3 @@
-
 const Queue = require('../models/Queue');
 const Clinic = require('../models/Clinic');
 const MedicalRecord = require('../models/MedicalRecord');
@@ -464,10 +463,8 @@ exports.getLiveQueue = async (req, res) => {
 // 🔟 Doctor specific - Show only today's queue
 exports.getDoctorQueue = async (req, res) => {
     try {
-        // Filter to show only today's appointments
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
@@ -478,8 +475,8 @@ exports.getDoctorQueue = async (req, res) => {
             isApproved: true,
             status: { $in: ['Waiting', 'In-Consultation'] },
             $or: [
-                { visitType: { $ne: 'Appointment' } },
-                { visitType: 'Appointment', appointmentDate: { $lt: tomorrow } }
+                { visitType: { $ne: 'Appointment' }, createdAt: { $gte: today, $lt: tomorrow } },
+                { visitType: 'Appointment', appointmentDate: { $gte: today, $lt: tomorrow } }
             ]
         }).sort({ createdAt: 1 });
 
@@ -496,7 +493,7 @@ exports.getDoctorQueue = async (req, res) => {
                     queueId: item._id,
                     appointmentDate: item.appointmentDate || item.createdAt
                 });
-                itemObj.estimatedWait = waitTime;
+                itemObj.estimatedWait = Math.min(Math.max(waitTime, 5), 180);
             } catch (err) {
                 itemObj.estimatedWait = 15;
             }
@@ -673,20 +670,18 @@ exports.getPatientStatus = async (req, res) => {
         // Predicted turn time is baseTimeDate + estimatedWait minutes
         const predictedTurnDate = new Date(baseTimeDate.getTime() + estimatedWait * 60000);
 
-        // Calculate display minutes
+        // Calculate display minutes safely
         let displayWaitMinutes = estimatedWait;
         if (!isFutureDay) {
-            // For today, if clinic hasn't opened yet, wait time includes the time from now until clinic opens
             const now = new Date();
             if (now < clinicOpenDate) {
-                const diffMs = predictedTurnDate.getTime() - now.getTime();
-                displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+                const diffMs = clinicOpenDate.getTime() - now.getTime();
+                displayWaitMinutes = Math.max(Math.round(diffMs / 60000) + estimatedWait, 5);
             } else {
-                // Clinic is open, wait time is relative to now
-                const diffMs = predictedTurnDate.getTime() - now.getTime();
-                displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+                displayWaitMinutes = Math.max(estimatedWait, 5);
             }
         }
+        displayWaitMinutes = Math.min(Math.max(displayWaitMinutes, 5), 180);
 
         // Helper to format predicted turn time nicely
         const formatTurnTime = (date) => {
@@ -904,13 +899,19 @@ exports.getPublicDoctorQueue = async (req, res) => {
                 // Predicted turn time is baseTimeDate + estimatedWait minutes
                 const predictedTurnDate = new Date(baseTimeDate.getTime() + estimatedWait * 60000);
 
-                // Calculate display minutes
+                // Calculate display minutes safely
                 const now = new Date();
-                const diffMs = predictedTurnDate.getTime() - now.getTime();
-                const displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 0);
+                let displayWaitMinutes = estimatedWait;
+                
+                const apptDateObj = item.appointmentDate ? new Date(item.appointmentDate) : null;
+                if (apptDateObj && apptDateObj.toDateString() === now.toDateString() && apptDateObj > now) {
+                    const diffMs = apptDateObj.getTime() - now.getTime();
+                    displayWaitMinutes = Math.max(Math.round(diffMs / 60000), 5);
+                }
+                displayWaitMinutes = Math.min(Math.max(displayWaitMinutes, 5), 180);
 
                 itemObj.estimatedWait = displayWaitMinutes;
-                itemObj.predictedTurnTime = predictedTurnDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+                itemObj.predictedTurnTime = new Date(now.getTime() + displayWaitMinutes * 60000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
             } catch (err) {
                 itemObj.estimatedWait = 15;
             }

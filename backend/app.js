@@ -39,6 +39,7 @@ const callRoutes = require('./routes/call_routes');
 const labRoutes = require('./routes/lab_routes');
 const labConnectionRoutes = require('./routes/lab_connection_routes');
 const superadminRoutes = require('./routes/superadmin_routes');
+const billingRoutes = require('./routes/billing_routes');
 
 const app = express();
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
@@ -267,6 +268,7 @@ app.use('/api/clinic', checkSubscription, clinicroutes);
 app.use('/api/call', checkSubscription, callRoutes);
 app.use('/api/lab', checkSubscription, labRoutes);
 app.use('/api/lab-connect', checkSubscription, labConnectionRoutes);
+app.use('/api/billing', checkSubscription, billingRoutes);
 app.use('/api/superadmin', superadminRoutes);
 
 // Health Check
