@@ -43,8 +43,15 @@ router.patch('/test-requests/:id/status', protectLab, ctrl.updateRequestStatus);
 // Lab uploads report for a test request
 router.post('/test-requests/:id/upload-report', protectLab, ctrl.uploadReportForRequest);
 
+const independentLabCtrl = require('../controllers/independent_lab_controller');
+
 // Lab settings routes
 router.get('/settings/lab', protectLab, ctrl.getLabSettings);
 router.patch('/settings/lab', protectLab, ctrl.updateLabSettings);
+
+// Lab Billing & Invoicing routes
+router.post('/billing/create', protectLab, independentLabCtrl.createLabInvoice);
+router.get('/billing/invoices', protectLab, independentLabCtrl.getLabInvoices);
+router.get('/billing/stats', protectLab, independentLabCtrl.getLabBillingStats);
 
 module.exports = router;

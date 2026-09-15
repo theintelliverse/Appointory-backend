@@ -321,3 +321,143 @@ exports.labResetPassword = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+/**
+ * 🧾 Create a new Lab Invoice (Independent Lab)
+ */
+exports.createLabInvoice = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const { patientName, patientPhone, items, subtotal, discount, tax, totalAmount, paidAmount, paymentMode, notes } = req.body;
+
+        if (!patientName || !patientPhone || !items || !items.length) {
+            return res.status(400).json({ success: false, message: 'Patient details and billed items are required.' });
+        }
+
+        const PatientInvoice = require('../models/PatientInvoice');
+        const IndependentLab = require('../models/IndependentLab');
+        const lab = await IndependentLab.findById(labId);
+
+        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+        const invoiceNumber = `LAB-${Date.now().toString().slice(-6)}${Math.floor(100 + Math.random() * 900)}`;
+
+        const parsedSubtotal = Number(subtotal) || 0;
+        const parsedDiscount = Number(discount) || 0;
+        const parsedTax = Number(tax) || 0;
+        const parsedTotal = Number(totalAmount) || 0;
+        const parsedPaid = Number(paidAmount) || 0;
+        const remainingDue = Math.max(0, parsedTotal - parsedPaid);
+
+        let paymentStatus = 'Paid';
+        if (remainingDue > 0 && parsedPaid > 0) paymentStatus = 'Partially Paid';
+        if (parsedPaid === 0) paymentStatus = 'Pending';
+
+        const invoice = await PatientInvoice.create({
+            invoiceNumber,
+            clinicId: labId, // reference to IndependentLab ID
+            patientName,
+            patientPhone: cleanPhone,
+            billingType: 'lab',
+            items,
+            subtotal: parsedSubtotal,
+            discount: parsedDiscount,
+            tax: parsedTax,
+            totalAmount: parsedTotal,
+            paidAmount: parsedPaid,
+            remainingDue,
+            paymentMode: paymentMode || 'Cash',
+            paymentStatus,
+            notes: notes || '',
+            createdBy: labId,
+            createdByName: lab?.labName || 'Laboratory'
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Lab invoice created successfully.',
+            invoice
+        });
+    } catch (error) {
+        console.error('❌ Error creating lab invoice:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * 📋 Get all Invoices for Independent Lab
+ */
+exports.getLabInvoices = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const { search, status } = req.query;
+
+        const PatientInvoice = require('../models/PatientInvoice');
+        const query = { clinicId: labId, billingType: 'lab' };
+
+        if (status && status !== 'all') {
+            query.paymentStatus = status;
+        }
+
+        if (search) {
+            const cleanSearch = search.trim();
+            query.$or = [
+                { patientName: { $regex: cleanSearch, $options: 'i' } },
+                { patientPhone: { $regex: cleanSearch, $options: 'i' } },
+                { invoiceNumber: { $regex: cleanSearch, $options: 'i' } }
+            ];
+        }
+
+        const invoices = await PatientInvoice.find(query).sort({ createdAt: -1 }).lean();
+
+        res.status(200).json({
+            success: true,
+            count: invoices.length,
+            invoices
+        });
+    } catch (error) {
+        console.error('❌ Error fetching lab invoices:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * 📊 Get Revenue Stats for Independent Lab
+ */
+exports.getLabBillingStats = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const PatientInvoice = require('../models/PatientInvoice');
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const todayInvoices = await PatientInvoice.find({
+            clinicId: labId,
+            billingType: 'lab',
+            createdAt: { $gte: startOfDay }
+        }).lean();
+
+        const todayRevenue = todayInvoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
+        const todayBillsCount = todayInvoices.length;
+
+        const allInvoicesWithDues = await PatientInvoice.find({
+            clinicId: labId,
+            billingType: 'lab',
+            remainingDue: { $gt: 0 }
+        }).lean();
+
+        const totalPendingDues = allInvoicesWithDues.reduce((sum, inv) => sum + (inv.remainingDue || 0), 0);
+
+        res.status(200).json({
+            success: true,
+            stats: {
+                todayRevenue,
+                todayBillsCount,
+                totalPendingDues
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+

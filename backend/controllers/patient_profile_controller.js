@@ -168,3 +168,89 @@ exports.updatePatientProfile = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+/**
+ * @desc    Upload a document/report to patient's Health Locker
+ * @route   POST /api/auth/patient/upload-document
+ * @access  Private (Patient)
+ */
+exports.uploadDocument = async (req, res) => {
+    try {
+        const patientId = req.user.id;
+        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = new RegExp(cleanPhone + '$');
+
+        let patient = await Patient.findById(patientId);
+        if (!patient) {
+            patient = await Patient.findOne({ phone: phoneRegex });
+        }
+
+        if (!patient) {
+            return res.status(404).json({ success: false, message: "Patient profile not found" });
+        }
+
+        // File is processed by multer-storage-cloudinary and available as req.file
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
+
+        const { title, fileType } = req.body;
+
+        const newDocument = {
+            title: title || req.file.originalname || 'Health Document',
+            fileUrl: req.file.path, // Cloudinary secure URL
+            fileType: fileType || (req.file.mimetype?.includes('pdf') ? 'PDF' : 'Image'),
+            uploadedAt: new Date()
+        };
+
+        patient.documents.push(newDocument);
+        await patient.save();
+
+        res.status(201).json({
+            success: true,
+            message: "Document uploaded successfully",
+            data: newDocument
+        });
+    } catch (error) {
+        console.error('Upload Document Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Mark a patient's appointment as Cancelled by queueId
+ * @route   PATCH /api/auth/patient/cancel-appointment/:queueId
+ * @access  Private (Patient)
+ */
+exports.cancelAppointmentStatus = async (req, res) => {
+    try {
+        const { queueId } = req.params;
+        const patientId = req.user.id;
+        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = new RegExp(cleanPhone + '$');
+
+        let patient = await Patient.findById(patientId);
+        if (!patient) {
+            patient = await Patient.findOne({ phone: phoneRegex });
+        }
+
+        if (!patient) {
+            return res.status(404).json({ success: false, message: "Patient not found" });
+        }
+
+        // Find the appointment in the patient's appointments array
+        const appointment = patient.appointments.find(
+            (a) => a.queueId?.toString() === queueId || a._id?.toString() === queueId
+        );
+
+        if (appointment) {
+            appointment.status = 'Cancelled';
+            await patient.save();
+        }
+
+        res.status(200).json({ success: true, message: "Appointment cancelled" });
+    } catch (error) {
+        console.error('Cancel Appointment Status Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

@@ -19,6 +19,9 @@ const clinicSchema = mongoose.Schema({
   
   // Billing & Queue Rules Config
   feeConsult: { type: Number, default: 500 },
+  feeFollowupConsult: { type: Number, default: 300 },
+  taxEnabled: { type: Boolean, default: true },
+  taxRate: { type: Number, default: 18 },
   feeLab: { type: Number, default: 450 },
   feeEmergency: { type: Number, default: 300 },
   feeMedicine: { type: Number, default: 120 },

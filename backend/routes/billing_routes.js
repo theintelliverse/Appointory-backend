@@ -5,7 +5,9 @@ const {
     createInvoice,
     getInvoices,
     getInvoiceById,
-    getRevenueStats
+    getRevenueStats,
+    getBillingSettings,
+    updateBillingSettings
 } = require('../controllers/billing_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -30,5 +32,9 @@ router.get('/invoices', authorize('receptionist', 'admin', 'doctor', 'lab'), get
 
 // 📄 Get single invoice by ID
 router.get('/invoice/:id', authorize('receptionist', 'admin', 'doctor', 'lab'), getInvoiceById);
+
+// ⚙️ Billing Settings (Tax & Consultation Fees Config)
+router.get('/settings', authorize('receptionist', 'admin', 'doctor', 'lab'), getBillingSettings);
+router.put('/settings', authorize('receptionist', 'admin', 'doctor', 'lab'), updateBillingSettings);
 
 module.exports = router;

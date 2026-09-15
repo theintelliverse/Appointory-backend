@@ -24,6 +24,9 @@ exports.fetchPatientBillingData = async (req, res) => {
         const clinic = await Clinic.findById(clinicId).lean();
         const clinicFees = {
             feeConsult: clinic?.feeConsult || 500,
+            feeFollowupConsult: clinic?.feeFollowupConsult || 300,
+            taxEnabled: clinic?.taxEnabled !== undefined ? clinic.taxEnabled : true,
+            taxRate: clinic?.taxRate ?? 18,
             feeLab: clinic?.feeLab || 450,
             feeEmergency: clinic?.feeEmergency || 300,
             feeMedicine: clinic?.feeMedicine || 120
@@ -409,5 +412,69 @@ exports.getInvoiceById = async (req, res) => {
             success: false,
             message: "Failed to fetch invoice details: " + error.message
         });
+    }
+};
+
+// --- ⚙️ GET BILLING SETTINGS ---
+exports.getBillingSettings = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const clinic = await Clinic.findById(clinicId).lean();
+        if (!clinic) {
+            return res.status(404).json({ success: false, message: "Clinic record not found." });
+        }
+        return res.status(200).json({
+            success: true,
+            settings: {
+                feeConsult: clinic.feeConsult ?? 500,
+                feeFollowupConsult: clinic.feeFollowupConsult ?? 300,
+                taxEnabled: clinic.taxEnabled !== undefined ? clinic.taxEnabled : true,
+                taxRate: clinic.taxRate ?? 18,
+                feeLab: clinic.feeLab ?? 450,
+                feeEmergency: clinic.feeEmergency ?? 300,
+                feeMedicine: clinic.feeMedicine ?? 120
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: "Failed to fetch settings: " + error.message });
+    }
+};
+
+// --- ⚙️ UPDATE BILLING SETTINGS ---
+exports.updateBillingSettings = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const { feeConsult, feeFollowupConsult, taxEnabled, taxRate, feeLab, feeEmergency, feeMedicine } = req.body;
+
+        const updateData = {};
+        if (feeConsult !== undefined) updateData.feeConsult = Number(feeConsult);
+        if (feeFollowupConsult !== undefined) updateData.feeFollowupConsult = Number(feeFollowupConsult);
+        if (taxEnabled !== undefined) updateData.taxEnabled = Boolean(taxEnabled);
+        if (taxRate !== undefined) updateData.taxRate = Number(taxRate);
+        if (feeLab !== undefined) updateData.feeLab = Number(feeLab);
+        if (feeEmergency !== undefined) updateData.feeEmergency = Number(feeEmergency);
+        if (feeMedicine !== undefined) updateData.feeMedicine = Number(feeMedicine);
+
+        const updatedClinic = await Clinic.findByIdAndUpdate(
+            clinicId,
+            { $set: updateData },
+            { new: true }
+        ).lean();
+
+        return res.status(200).json({
+            success: true,
+            message: "Billing settings updated successfully.",
+            settings: {
+                feeConsult: updatedClinic.feeConsult,
+                feeFollowupConsult: updatedClinic.feeFollowupConsult,
+                taxEnabled: updatedClinic.taxEnabled,
+                taxRate: updatedClinic.taxRate,
+                feeLab: updatedClinic.feeLab,
+                feeEmergency: updatedClinic.feeEmergency,
+                feeMedicine: updatedClinic.feeMedicine
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: "Failed to update settings: " + error.message });
     }
 };

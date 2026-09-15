@@ -2,9 +2,35 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth_controller');
 const patientController = require('../controllers/patient_auth_controller');
-const { getPatientProfile } = require('../controllers/patient_profile_controller');
+const { getPatientProfile, uploadDocument, cancelAppointmentStatus } = require('../controllers/patient_profile_controller');
 const { protect, protectPatient, protectLab } = require('../utils/auth_middleware');
 const labAuthController = require('../controllers/independent_lab_controller');
+
+// 🔑 Multer + Cloudinary Setup for patient document uploads
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const CloudinaryStoragePkg = require('multer-storage-cloudinary');
+const CloudinaryStorage = CloudinaryStoragePkg.CloudinaryStorage || CloudinaryStoragePkg;
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const cloudinaryStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+        folder: 'swasthya_mitra/patient_documents',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'pdf', 'webp'],
+        resource_type: 'auto'
+    }
+});
+
+const upload = multer({ 
+    storage: cloudinaryStorage,
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 /**
  * 🏥 CLINIC & STAFF AUTH (PUBLIC)
@@ -31,7 +57,7 @@ router.post('/patient/verify-locker', patientController.verifyLockerOTP);
 router.post('/patient/register', patientController.registerPatient);
 router.post('/patient/forgot-password', patientController.patientForgotPassword);
 router.post('/patient/reset-password', patientController.patientResetPassword);
-// 🆕 NEW PASSWORD-BASED AUTHENTICATION ROUTES
+// 🆕 PASSWORD-BASED AUTHENTICATION ROUTES
 router.post('/patient/login-with-password', patientController.patientLoginWithPassword);
 router.post('/patient/register-with-otp-password', patientController.registerWithOTPAndPassword);
 router.post('/patient/change-password-with-otp', patientController.changePasswordWithOTP);
@@ -39,13 +65,18 @@ router.get('/queue/public/status/:queueId', patientController.getPublicQueueStat
 
 /**
  * 🔐 PATIENT LOCKER DATA (PROTECTED)
- * Hits: http://localhost:5000/api/auth/patient/profile
  */
 router.get('/patient/profile', protectPatient, getPatientProfile);
 router.patch('/patient/update-profile', protectPatient, require('../controllers/patient_profile_controller').updatePatientProfile);
 router.post('/patient/book-appointment', protectPatient, patientController.bookAppointment);
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
+
+// 🆕 Upload document to Health Locker (Cloudinary)
+router.post('/patient/upload-document', protectPatient, upload.single('document'), uploadDocument);
+
+// 🆕 Mark appointment as cancelled in patient record
+router.patch('/patient/cancel-appointment/:queueId', protectPatient, cancelAppointmentStatus);
 
 /**
  * 🔬 INDEPENDENT LAB AUTH (PUBLIC)
@@ -61,4 +92,4 @@ router.post('/lab/reset-password', labAuthController.labResetPassword);
 router.get('/lab/me', protectLab, labAuthController.getLabMe);
 router.patch('/lab/update-profile', protectLab, labAuthController.updateLabProfile);
 
-module.exports = router;
+module.exports = router;
