@@ -4,17 +4,22 @@ const User = require("../models/User");
 const Clinic = require("../models/Clinic");
 const { generateToken } = require('../utils/auth_helper');
 const MedicalRecord = require('../models/MedicalRecord');
+const Otp = require('../models/Otp');
 const bcrypt = require('bcryptjs');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
-const client = new twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-);
-
-// Temporary store for OTPs (In production, use Redis)
-let otpStore = {};
+const getTwilioClient = () => {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    if (!accountSid || !authToken) return null;
+    try {
+        return twilio(accountSid, authToken);
+    } catch (e) {
+        console.error("Twilio client init error:", e.message);
+        return null;
+    }
+};
 
 /**
  * 1️⃣ SEND OTP (Real SMS via Twilio)
@@ -38,14 +43,30 @@ exports.sendOTP = async (req, res) => {
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // Store with 5-minute expiry
-        otpStore[cleanPhone] = { otp, expires: Date.now() + 300000 };
+        // Store with 5-minute expiry in MongoDB
+        await Otp.findOneAndUpdate(
+            { identifier: cleanPhone, type: 'patient_phone' },
+            { otp, expiresAt: new Date(Date.now() + 300000) },
+            { upsert: true, new: true }
+        );
         console.log(`✅ OTP Generated for ${cleanPhone}: ${otp}`);
 
         const formattedPhone = `+91${cleanPhone}`;
 
         // REAL SMS CODE
         try {
+            const client = getTwilioClient();
+            if (!client || !process.env.TWILIO_PHONE_NUMBER) {
+                console.warn(`⚠️ Twilio credentials missing in environment. OTP for ${cleanPhone}: ${otp}`);
+                return res.status(200).json({
+                    success: true,
+                    message: process.env.NODE_ENV === 'development'
+                        ? "OTP generated (Twilio not configured)."
+                        : "OTP service not configured.",
+                    debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+                });
+            }
+
             await client.messages.create({
                 body: `Your appointory OTP is: ${otp}. Valid for 5 minutes.`,
                 from: process.env.TWILIO_PHONE_NUMBER,
@@ -80,13 +101,13 @@ exports.verifyOTPForCheckin = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = otpStore[cleanPhone];
+        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
 
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
+        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
             return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
         }
 
-        delete otpStore[cleanPhone]; // Clear OTP after use
+        await Otp.deleteOne({ _id: record._id }); // Clear OTP after use
 
         res.status(200).json({
             success: true,
@@ -105,9 +126,9 @@ exports.validateOTP = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = otpStore[cleanPhone];
+        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
 
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
+        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
             return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
         }
 
@@ -176,7 +197,7 @@ exports.verifyLockerOTP = async (req, res) => {
         }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = otpStore[cleanPhone];
+        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
 
         // ✅ Check if OTP exists
         if (!record) {
@@ -197,8 +218,8 @@ exports.verifyLockerOTP = async (req, res) => {
         }
 
         // ✅ Check if OTP is expired
-        if (record.expires < Date.now()) {
-            delete otpStore[cleanPhone];
+        if (record.expiresAt < new Date()) {
+            await Otp.deleteOne({ _id: record._id });
             console.warn(`⚠️  Expired OTP for phone: ${cleanPhone}`);
             return res.status(400).json({
                 success: false,
@@ -207,7 +228,7 @@ exports.verifyLockerOTP = async (req, res) => {
         }
 
         // ✅ OTP is valid, delete it
-        delete otpStore[cleanPhone];
+        await Otp.deleteOne({ _id: record._id });
         console.log(`✅ OTP verified for phone: ${cleanPhone}`);
 
         const phoneRegex = new RegExp(cleanPhone + '$');
@@ -594,13 +615,13 @@ exports.patientForgotPassword = async (req, res) => {
             return res.status(404).json({ success: false, message: "Patient not found with this phone number" });
         }
 
-        // Generate OTP
+        // Generate OTP and save to MongoDB
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        otpStore[cleanPhone] = {
-            otp,
-            expires: Date.now() + 300000,
-            type: 'password-reset'
-        };
+        await Otp.findOneAndUpdate(
+            { identifier: cleanPhone, type: 'password_reset' },
+            { otp, expiresAt: new Date(Date.now() + 300000) },
+            { upsert: true, new: true }
+        );
 
         const formattedPhone = `+91${cleanPhone}`;
 
@@ -637,15 +658,11 @@ exports.patientResetPassword = async (req, res) => {
         }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = otpStore[cleanPhone];
+        const record = await Otp.findOne({ identifier: cleanPhone, type: 'password_reset' });
 
         // Verify OTP
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
+        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
             return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
-        }
-
-        if (record.type !== 'password-reset') {
-            return res.status(400).json({ success: false, message: "Invalid OTP type" });
         }
 
         const phoneRegex = new RegExp(cleanPhone + '$');
@@ -660,7 +677,7 @@ exports.patientResetPassword = async (req, res) => {
         patient.passwordHash = hashedPassword;
         await patient.save();
 
-        delete otpStore[cleanPhone];
+        await Otp.deleteOne({ _id: record._id });
 
         res.status(200).json({
             success: true,
@@ -804,8 +821,8 @@ exports.registerWithOTPAndPassword = async (req, res) => {
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
         // Verify OTP
-        const record = otpStore[cleanPhone];
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
+        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
+        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid or expired OTP"
@@ -813,7 +830,7 @@ exports.registerWithOTPAndPassword = async (req, res) => {
         }
 
         // Delete OTP after verification
-        delete otpStore[cleanPhone];
+        await Otp.deleteOne({ _id: record._id });
 
         // Check if patient already exists
         const existingPatient = await Patient.findOne({ phone: cleanPhone });
@@ -882,8 +899,11 @@ exports.changePasswordWithOTP = async (req, res) => {
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
         // Verify OTP
-        const record = otpStore[cleanPhone];
-        if (!record || record.otp !== otp || record.expires < Date.now()) {
+        const record = await Otp.findOne({
+            identifier: cleanPhone,
+            type: { $in: ['password_reset', 'patient_phone'] }
+        });
+        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid or expired OTP"
@@ -891,7 +911,7 @@ exports.changePasswordWithOTP = async (req, res) => {
         }
 
         // Delete OTP after verification
-        delete otpStore[cleanPhone];
+        await Otp.deleteOne({ _id: record._id });
 
         // Find patient
         const patient = await Patient.findOne({ phone: cleanPhone });

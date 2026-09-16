@@ -1,11 +1,10 @@
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
 const StaffSession = require('../models/StaffSession');
+const Otp = require('../models/Otp');
 const { generateToken, hashPassword, comparePassword } = require('../utils/auth_helper');
 const { sendEmail } = require('../utils/send_email');
 const sendSMS = require('../utils/send_sms');
-
-let registrationOtpStore = {};
 
 /**
  * @desc    Register a new Clinic and its primary Admin
@@ -33,11 +32,14 @@ exports.registerClinic = async (req, res) => {
             const generatedEmailOtp = Math.floor(100000 + Math.random() * 900000).toString();
             const generatedSmsOtp = Math.floor(100000 + Math.random() * 900000).toString();
 
-            registrationOtpStore[email.toLowerCase()] = {
-                emailOtp: generatedEmailOtp,
-                smsOtp: generatedSmsOtp,
-                expires: Date.now() + 600000 // 10 minutes
-            };
+            await Otp.findOneAndUpdate(
+                { identifier: email.toLowerCase(), type: 'clinic_registration' },
+                {
+                    otp: `${generatedEmailOtp}:${generatedSmsOtp}`,
+                    expiresAt: new Date(Date.now() + 600000) // 10 minutes
+                },
+                { upsert: true, new: true }
+            );
 
             // Send Email verification code
             const emailSubject = "🏥 Appointory Clinic Onboarding - Email Verification Code";
@@ -67,16 +69,17 @@ exports.registerClinic = async (req, res) => {
             });
         }
 
-        const storedOtp = registrationOtpStore[email.toLowerCase()];
-        if (!storedOtp || storedOtp.expires < Date.now()) {
+        const storedOtpDoc = await Otp.findOne({ identifier: email.toLowerCase(), type: 'clinic_registration' });
+        if (!storedOtpDoc || storedOtpDoc.expiresAt < new Date()) {
             return res.status(400).json({ success: false, message: "Verification codes expired or invalid. Please request new codes." });
         }
 
-        if (storedOtp.emailOtp !== emailOtp || storedOtp.smsOtp !== smsOtp) {
+        const [expectedEmailOtp, expectedSmsOtp] = (storedOtpDoc.otp || '').split(':');
+        if (expectedEmailOtp !== emailOtp || expectedSmsOtp !== smsOtp) {
             return res.status(400).json({ success: false, message: "Invalid email or SMS verification code. Please check and try again." });
         }
 
-        delete registrationOtpStore[email.toLowerCase()];
+        await Otp.deleteOne({ _id: storedOtpDoc._id });
 
         const SystemConfig = require('../models/SystemConfig');
         const systemConfig = await SystemConfig.findOne();
@@ -90,6 +93,7 @@ exports.registerClinic = async (req, res) => {
             clinicCode: clinicCode.toUpperCase(),
             address,
             contactPhone: cleanPhone,
+            email: email.toLowerCase(),
             subscriptionPlan: 'clinic-only',
             subscriptionExpiresAt: trialExpiry,
             approvalStatus: 'pending',
@@ -312,10 +316,10 @@ exports.forgotPassword = async (req, res) => {
         const { email, clinicCode } = req.body;
 
         // ✅ Validate required fields
-        if (!email || !clinicCode) {
+        if (!email) {
             return res.status(400).json({
                 success: false,
-                message: "Email and clinic code are required"
+                message: "Email is required"
             });
         }
 
@@ -328,22 +332,36 @@ exports.forgotPassword = async (req, res) => {
             });
         }
 
-        // Find clinic
-        const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
-        if (!clinic) {
-            return res.status(404).json({
-                success: false,
-                message: "Clinic not found"
-            });
-        }
+        let user;
+        let clinic = null;
 
-        // Find user
-        const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: "User not found with this email in the clinic"
-            });
+        if (!clinicCode) {
+            // Check if user is a Super Admin
+            user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, role: 'superadmin' });
+            if (!user) {
+                return res.status(404).json({
+                    success: false,
+                    message: "User not found. Clinic code is required for clinic staff."
+                });
+            }
+        } else {
+            // Find clinic
+            clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
+            if (!clinic) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Clinic not found"
+                });
+            }
+
+            // Find user
+            user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
+            if (!user) {
+                return res.status(404).json({
+                    success: false,
+                    message: "User not found with this email in the clinic"
+                });
+            }
         }
 
         // Generate reset token
@@ -359,7 +377,8 @@ exports.forgotPassword = async (req, res) => {
         // Parse FRONTEND_URL which may contain multiple URLs separated by commas
         const frontendUrlList = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0].trim() : 'http://localhost:5173';
         const frontendUrl = frontendUrlList.replace(/\/$/, '');
-        const resetLink = `${frontendUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}&clinicCode=${clinicCode}`;
+        const clinicCodeParam = clinicCode ? `&clinicCode=${encodeURIComponent(clinicCode)}` : '';
+        const resetLink = `${frontendUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}${clinicCodeParam}`;
 
         console.log(`📧 Generating password reset link for ${email}`);
         console.log(`🔗 Reset Link: ${resetLink}`);
@@ -387,7 +406,7 @@ exports.forgotPassword = async (req, res) => {
                         <!-- Message -->
                         <p style="color: #555; font-size: 15px; line-height: 1.6; margin: 0 0 15px 0;">
                             You requested a password reset for your <strong>Appointory</strong> account at <br/>
-                            <span style="background-color: #FFA80015; padding: 4px 8px; border-radius: 4px; color: #422D0B;"><b>${clinic.name}</b></span>
+                            <span style="background-color: #FFA80015; padding: 4px 8px; border-radius: 4px; color: #422D0B;"><b>${clinic ? clinic.name : 'Appointory SuperAdmin Portal'}</b></span>
                         </p>
 
                         <!-- Action Required -->
@@ -510,10 +529,10 @@ exports.resetPassword = async (req, res) => {
         const { email, token, newPassword, clinicCode } = req.body;
 
         // ✅ Validate required fields
-        if (!email || !token || !newPassword || !clinicCode) {
+        if (!email || !token || !newPassword) {
             return res.status(400).json({
                 success: false,
-                message: "All fields are required"
+                message: "Email, token, and new password are required"
             });
         }
 
@@ -534,22 +553,33 @@ exports.resetPassword = async (req, res) => {
             });
         }
 
-        // Find clinic
-        const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
-        if (!clinic) {
-            return res.status(404).json({
-                success: false,
-                message: "Clinic not found"
-            });
-        }
+        let user;
+        if (!clinicCode) {
+            user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, role: 'superadmin' });
+            if (!user) {
+                return res.status(404).json({
+                    success: false,
+                    message: "SuperAdmin user not found"
+                });
+            }
+        } else {
+            // Find clinic
+            const clinic = await Clinic.findOne({ clinicCode: clinicCode.toUpperCase() });
+            if (!clinic) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Clinic not found"
+                });
+            }
 
-        // Find user
-        const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: "User not found with this email in the clinic"
-            });
+            // Find user
+            user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') }, clinicId: clinic._id });
+            if (!user) {
+                return res.status(404).json({
+                    success: false,
+                    message: "User not found with this email in the clinic"
+                });
+            }
         }
 
         // ✅ Verify reset token and expiry

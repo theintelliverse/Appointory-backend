@@ -5,6 +5,7 @@ const clinicSchema = mongoose.Schema({
   clinicCode: { type: String, required: true, unique: true, uppercase: true },
   address: { type: String, required: true },
   contactPhone: { type: String, required: true },
+  email: { type: String, trim: true, lowercase: true },
   openingTime: { type: String, default: '09:00' },
   closingTime: { type: String, default: '17:00' },
   breakStartTime: { type: String, default: '12:00' },

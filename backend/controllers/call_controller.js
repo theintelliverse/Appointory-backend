@@ -5,10 +5,18 @@ const Clinic = require('../models/Clinic');
 const twilio = require('twilio');
 const schedule = require('node-schedule');
 
-// Initialize Twilio client
-const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
+// Initialize Twilio client getter
+const getTwilioClient = () => {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    if (!accountSid || !authToken) return null;
+    try {
+        return twilio(accountSid, authToken);
+    } catch (e) {
+        console.error("Twilio client init error:", e.message);
+        return null;
+    }
+};
 
 // Store scheduled jobs for cleanup
 const scheduledJobs = {};
@@ -71,20 +79,25 @@ exports.initiateCall = async (req, res) => {
         const initialMessage = `Hi ${patient.name || 'there'}! Dr. ${doctor.name} is calling you for your appointment at ${clinic.name}. Please reply "Yes" to confirm. We will remind you if you don't respond. - Appointory`;
 
         try {
-            const formattedPhone = `+91${cleanPhone}`;
-            const smsResult = await client.messages.create({
-                body: initialMessage,
-                from: process.env.TWILIO_PHONE_NUMBER,
-                to: formattedPhone
-            });
+            const client = getTwilioClient();
+            if (!client || !process.env.TWILIO_PHONE_NUMBER) {
+                console.warn("⚠️ Twilio not configured; skipping initial SMS alert.");
+            } else {
+                const formattedPhone = `+91${cleanPhone}`;
+                const smsResult = await client.messages.create({
+                    body: initialMessage,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: formattedPhone
+                });
 
-            callRequest.smsSent = true;
-            callRequest.smsMessageSid = smsResult.sid;
-            callRequest.smsSentAt = new Date();
-            callRequest.status = 'notified';
-            await callRequest.save();
+                callRequest.smsSent = true;
+                callRequest.smsMessageSid = smsResult.sid;
+                callRequest.smsSentAt = new Date();
+                callRequest.status = 'notified';
+                await callRequest.save();
 
-            console.log(`✅ Initial SMS sent successfully | SID: ${smsResult.sid}`);
+                console.log(`✅ Initial SMS sent successfully | SID: ${smsResult.sid}`);
+            }
 
             // ✅ SCHEDULE REMINDER MESSAGES
             scheduleReminders(callRequest, doctor, clinic, patient);
@@ -183,6 +196,11 @@ const sendReminder = async (callRequest, doctor, clinic, patient, minutesAfter) 
         const reminderMessage = `Reminder: Dr. ${doctor.name} is still waiting for you at ${clinic.name}! Please reply "Yes" to confirm you're joining the consultation. - Appointory`;
 
         try {
+            const client = getTwilioClient();
+            if (!client || !process.env.TWILIO_PHONE_NUMBER) {
+                console.warn("⚠️ Twilio not configured; skipping SMS reminder.");
+                return;
+            }
             const formattedPhone = `+91${callRequest.patientPhone}`;
             const smsResult = await client.messages.create({
                 body: reminderMessage,

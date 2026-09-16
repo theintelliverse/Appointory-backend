@@ -331,4 +331,13 @@ if (!isVercel && require.main === module) {
     startServer();
 }
 
+// 🛡️ Catch unhandled errors to prevent sudden server crashes in production
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err.message);
+});
+
 module.exports = app;

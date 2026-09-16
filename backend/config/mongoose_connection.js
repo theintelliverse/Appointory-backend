@@ -3,8 +3,8 @@ const mongoose = require('mongoose');
 
 const mongoUri = process.env.MONGO_URL || process.env.MONGODB_URI;
 
-// Disable buffering so queries fail immediately if MongoDB is not connected
-mongoose.set('bufferCommands', false);
+// Enable buffering so queries wait for initial connection instead of crashing on cold starts
+mongoose.set('bufferCommands', true);
 
 // Use a global cache so Vercel serverless functions reuse connections
 const globalMongoose = global;

@@ -551,8 +551,19 @@ exports.generateRazorpayOrder = async (req, res) => {
                     receipt: `receipt_${facilityId}_${Date.now()}`
                 });
             } catch (err) {
-                console.error('⚠️ Razorpay order creation failed, falling back to mock:', err.message);
+                console.error('⚠️ Razorpay order creation failed:', err.message);
+                if (process.env.NODE_ENV === 'production') {
+                    return res.status(502).json({
+                        success: false,
+                        message: 'Payment gateway service is currently unavailable. Please try again later.'
+                    });
+                }
             }
+        } else if (process.env.NODE_ENV === 'production') {
+            return res.status(500).json({
+                success: false,
+                message: 'Payment gateway credentials not configured on server.'
+            });
         }
 
         // Create Payment Record
@@ -590,11 +601,16 @@ exports.verifyRazorpayPayment = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Subscription order record not found' });
         }
 
+        const isProduction = process.env.NODE_ENV === 'production';
         const keySecret = process.env.RAZORPAY_KEY_SECRET;
-        const isMock = razorpayOrderId.startsWith('order_mock_') || !keySecret || keySecret === 'mock_secret';
 
-        if (!isMock) {
-            // Verify signature
+        if (isProduction) {
+            if (razorpayOrderId.startsWith('order_mock_') || !keySecret || keySecret === 'mock_secret') {
+                return res.status(400).json({ success: false, message: 'Invalid payment order or gateway unconfigured in production.' });
+            }
+            if (!razorpaySignature || !razorpayPaymentId) {
+                return res.status(400).json({ success: false, message: 'Missing payment verification signature or ID.' });
+            }
             const shasum = crypto.createHmac('sha256', keySecret);
             shasum.update(`${razorpayOrderId}|${razorpayPaymentId}`);
             const digest = shasum.digest('hex');
@@ -602,6 +618,19 @@ exports.verifyRazorpayPayment = async (req, res) => {
                 payment.status = 'failed';
                 await payment.save();
                 return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });
+            }
+        } else {
+            const isMock = razorpayOrderId.startsWith('order_mock_') || !keySecret || keySecret === 'mock_secret';
+            if (!isMock) {
+                // Verify signature
+                const shasum = crypto.createHmac('sha256', keySecret);
+                shasum.update(`${razorpayOrderId}|${razorpayPaymentId}`);
+                const digest = shasum.digest('hex');
+                if (digest !== razorpaySignature) {
+                    payment.status = 'failed';
+                    await payment.save();
+                    return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });
+                }
             }
         }
 
@@ -665,6 +694,10 @@ exports.verifyRazorpayPayment = async (req, res) => {
             await clinic.save();
             facilityName = clinic.name;
             facilityEmail = clinic.email;
+            if (!facilityEmail) {
+                const clinicAdmin = await User.findOne({ clinicId: clinic._id, role: 'admin' });
+                facilityEmail = clinicAdmin?.email || '';
+            }
             facilityCode = clinic.clinicCode;
             facilityAddress = clinic.address || '';
         } else {

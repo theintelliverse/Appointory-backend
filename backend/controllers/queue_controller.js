@@ -9,13 +9,27 @@ const {
     updatePredictorWithData
 } = require('../AI_model/appointment_predictor');
 const twilio = require('twilio');
-const client = new twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-);
+
+const getTwilioClient = () => {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    if (!accountSid || !authToken) return null;
+    try {
+        return twilio(accountSid, authToken);
+    } catch (e) {
+        console.error("Twilio client init error:", e.message);
+        return null;
+    }
+};
+
 // --- 🛠️ OPTIMIZED SMS SIMULATION (Twilio Rate Limit Protection) ---
 const sendTwilioAlert = async (phone, message) => {
     try {
+        const client = getTwilioClient();
+        if (!client || !process.env.TWILIO_PHONE_NUMBER) {
+            console.warn("⚠️ Twilio not configured; skipping SMS alert.");
+            return;
+        }
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
         const formattedPhone = `+91${cleanPhone}`;
 

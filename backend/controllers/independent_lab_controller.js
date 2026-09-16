@@ -1,10 +1,9 @@
 const IndependentLab = require('../models/IndependentLab');
+const Otp = require('../models/Otp');
 const { generateToken, hashPassword, comparePassword } = require('../utils/auth_helper');
 const { sendEmail } = require('../utils/send_email');
 const sendSMS = require('../utils/send_sms');
 const crypto = require('crypto');
-
-let registrationOtpStore = {};
 
 /**
  * @desc    Register a new Independent Lab
@@ -34,11 +33,14 @@ exports.registerLab = async (req, res) => {
             const generatedEmailOtp = Math.floor(100000 + Math.random() * 900000).toString();
             const generatedSmsOtp = Math.floor(100000 + Math.random() * 900000).toString();
 
-            registrationOtpStore[email.toLowerCase()] = {
-                emailOtp: generatedEmailOtp,
-                smsOtp: generatedSmsOtp,
-                expires: Date.now() + 600000 // 10 minutes
-            };
+            await Otp.findOneAndUpdate(
+                { identifier: email.toLowerCase(), type: 'lab_registration' },
+                {
+                    otp: `${generatedEmailOtp}:${generatedSmsOtp}`,
+                    expiresAt: new Date(Date.now() + 600000) // 10 minutes
+                },
+                { upsert: true, new: true }
+            );
 
             // Send Email verification code
             const emailSubject = "🧪 Appointory Lab Onboarding - Email Verification Code";
@@ -68,16 +70,17 @@ exports.registerLab = async (req, res) => {
             });
         }
 
-        const storedOtp = registrationOtpStore[email.toLowerCase()];
-        if (!storedOtp || storedOtp.expires < Date.now()) {
+        const storedOtpDoc = await Otp.findOne({ identifier: email.toLowerCase(), type: 'lab_registration' });
+        if (!storedOtpDoc || storedOtpDoc.expiresAt < new Date()) {
             return res.status(400).json({ success: false, message: "Verification codes expired or invalid. Please request new codes." });
         }
 
-        if (storedOtp.emailOtp !== emailOtp || storedOtp.smsOtp !== smsOtp) {
+        const [expectedEmailOtp, expectedSmsOtp] = (storedOtpDoc.otp || '').split(':');
+        if (expectedEmailOtp !== emailOtp || expectedSmsOtp !== smsOtp) {
             return res.status(400).json({ success: false, message: "Invalid email or SMS verification code. Please check and try again." });
         }
 
-        delete registrationOtpStore[email.toLowerCase()];
+        await Otp.deleteOne({ _id: storedOtpDoc._id });
 
         const hashedPassword = await hashPassword(password);
 

@@ -107,6 +107,7 @@ exports.getPatientProfile = async (req, res) => {
             bloodGroup: lockerProfile?.bloodGroup,
             documents: documents,  // ✅ Changed from digitalLocker
             medicalHistory: medicalHistory,  // ✅ Changed from visitHistory
+            visitHistory: medicalHistory,  // ✅ Backward compatibility alias
             vitals: vitals,  // ✅ Added vitals array
             lastUpdated: Date.now()
         };

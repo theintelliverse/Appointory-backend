@@ -72,8 +72,29 @@ router.post('/patient/book-appointment', protectPatient, patientController.bookA
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
+// Middleware to accept either 'document' or 'file' field and handle multer errors cleanly
+const documentUploadMiddleware = (req, res, next) => {
+    upload.fields([
+        { name: 'document', maxCount: 1 },
+        { name: 'file', maxCount: 1 }
+    ])(req, res, (err) => {
+        if (err) {
+            console.error('❌ Document Upload Multer Error:', err.message);
+            return res.status(400).json({ success: false, message: err.message || 'File upload error' });
+        }
+        if (req.files) {
+            if (req.files.document && req.files.document[0]) {
+                req.file = req.files.document[0];
+            } else if (req.files.file && req.files.file[0]) {
+                req.file = req.files.file[0];
+            }
+        }
+        next();
+    });
+};
+
 // 🆕 Upload document to Health Locker (Cloudinary)
-router.post('/patient/upload-document', protectPatient, upload.single('document'), uploadDocument);
+router.post('/patient/upload-document', protectPatient, documentUploadMiddleware, uploadDocument);
 
 // 🆕 Mark appointment as cancelled in patient record
 router.patch('/patient/cancel-appointment/:queueId', protectPatient, cancelAppointmentStatus);

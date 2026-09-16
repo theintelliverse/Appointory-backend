@@ -1,5 +1,6 @@
-const cloudinary = require('cloudinary');   // ✅ NO .v2
-const CloudinaryStorage = require('multer-storage-cloudinary');
+const cloudinary = require('cloudinary').v2;
+const CloudinaryStoragePkg = require('multer-storage-cloudinary');
+const CloudinaryStorage = CloudinaryStoragePkg.CloudinaryStorage || CloudinaryStoragePkg;
 require('dotenv').config();
 
 cloudinary.config({
@@ -10,11 +11,14 @@ cloudinary.config({
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  folder: 'patient_documents',
-  allowedFormats: ['jpg', 'png', 'jpeg', 'pdf'],
-  filename: (req, file, cb) => {
-    cb(null, `lab-${Date.now()}`);
-  },
+  params: {
+    folder: 'patient_documents',
+    allowed_formats: ['jpg', 'png', 'jpeg', 'pdf', 'webp'],
+    resource_type: 'auto',
+    filename: (req, file, cb) => {
+      cb(null, `lab-${Date.now()}`);
+    }
+  }
 });
 
 module.exports = { cloudinary, storage };

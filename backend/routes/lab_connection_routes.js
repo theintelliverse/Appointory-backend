@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const { storage } = require('../utils/cloudinary_config');
+const upload = multer({ storage });
 const ctrl = require('../controllers/lab_connection_controller');
 const { protect, authorize, protectLab } = require('../utils/auth_middleware');
 
@@ -41,7 +44,7 @@ router.post('/test-requests/lab/create', protectLab, ctrl.createLabTestRequest);
 router.patch('/test-requests/:id/status', protectLab, ctrl.updateRequestStatus);
 
 // Lab uploads report for a test request
-router.post('/test-requests/:id/upload-report', protectLab, ctrl.uploadReportForRequest);
+router.post('/test-requests/:id/upload-report', protectLab, upload.array('file', 10), ctrl.uploadReportForRequest);
 
 const independentLabCtrl = require('../controllers/independent_lab_controller');
 
