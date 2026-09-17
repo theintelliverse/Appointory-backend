@@ -437,8 +437,21 @@ exports.bookAppointment = async (req, res) => {
         }
 
         if (rescheduleAppointmentId) {
-            // Find existing queue entry
-            const queueEntry = await Queue.findById(rescheduleAppointmentId);
+            // Find existing queue entry (supports queueId or patient appointment subdocument ID)
+            let queueEntry = null;
+            try {
+                queueEntry = await Queue.findById(rescheduleAppointmentId);
+            } catch (_) {}
+
+            if (!queueEntry) {
+                const matchedInPatient = patient.appointments.find(app => app._id?.toString() === rescheduleAppointmentId || app.queueId?.toString() === rescheduleAppointmentId);
+                if (matchedInPatient?.queueId) {
+                    try {
+                        queueEntry = await Queue.findById(matchedInPatient.queueId);
+                    } catch (_) {}
+                }
+            }
+
             if (!queueEntry) {
                 return res.status(404).json({ success: false, message: "Original appointment not found." });
             }
@@ -453,7 +466,11 @@ exports.bookAppointment = async (req, res) => {
             await queueEntry.save();
 
             // Find patient and update their appointment record
-            const appointmentIndex = patient.appointments.findIndex(app => app.queueId?.toString() === rescheduleAppointmentId);
+            const appointmentIndex = patient.appointments.findIndex(app => 
+                (queueEntry._id && app.queueId?.toString() === queueEntry._id.toString()) ||
+                app.queueId?.toString() === rescheduleAppointmentId ||
+                app._id?.toString() === rescheduleAppointmentId
+            );
             if (appointmentIndex !== -1) {
                 patient.appointments[appointmentIndex].appointmentDate = parsedAppointmentDate;
                 patient.appointments[appointmentIndex].status = 'Scheduled';
