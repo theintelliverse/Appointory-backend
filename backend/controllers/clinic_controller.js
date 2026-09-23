@@ -288,7 +288,7 @@ exports.getClinicDoctors = async (req, res) => {
             clinicId,
             role: 'doctor',
             isActive: true
-        }).select('_id name specialization isAvailable experience education bio profileImage clinicLocation clinicContact phoneNumber');
+        }).select('_id name specialization isAvailable experience education bio profileImage clinicLocation clinicContact phoneNumber availableDays');
 
         console.log(`✅ Found ${doctors.length} doctors for clinic ${clinicId}`);
 
@@ -501,4 +501,264 @@ exports.getPublicClinicDetails = async (req, res) => {
             message: error.message
         });
     }
-};
+};
+
+/**
+ * ========================================================
+ * 🏖️ CLINIC & DOCTOR LEAVE / HOLIDAY MANAGEMENT
+ * ========================================================
+ */
+
+/**
+ * @desc    Get all leaves & holidays for the logged-in clinic
+ * @route   GET /api/clinic/leaves
+ * @access  Private (Admin)
+ */
+exports.getClinicLeaves = async (req, res) => {
+    try {
+        const Leave = require('../models/Leave');
+        const clinicId = req.user.clinicId;
+
+        const leaves = await Leave.find({ clinicId })
+            .populate('doctorId', 'name specialization email availableDays')
+            .sort({ startDate: 1 });
+
+        res.status(200).json({
+            success: true,
+            data: leaves
+        });
+    } catch (error) {
+        console.error('❌ Error fetching clinic leaves:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Add a new Clinic Holiday or Doctor Leave
+ * @route   POST /api/clinic/leaves
+ * @access  Private (Admin)
+ */
+exports.addClinicLeave = async (req, res) => {
+    try {
+        const Leave = require('../models/Leave');
+        const User = require('../models/User');
+        const clinicId = req.user.clinicId;
+        const { doctorId, type, title, reason, startDate, endDate } = req.body;
+
+        if (!title || !startDate || !endDate) {
+            return res.status(400).json({
+                success: false,
+                message: "Title, start date, and end date are required."
+            });
+        }
+
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid start or end date format."
+            });
+        }
+
+        if (start > end) {
+            return res.status(400).json({
+                success: false,
+                message: "Start date cannot be after end date."
+            });
+        }
+
+        // Normalize start to beginning of day and end to end of day in UTC/local
+        start.setHours(0, 0, 0, 0);
+        end.setHours(23, 59, 59, 999);
+
+        let validatedDoctorId = null;
+        let leaveType = type || (doctorId ? 'doctor_leave' : 'clinic_holiday');
+
+        if (doctorId) {
+            const doctor = await User.findOne({ _id: doctorId, clinicId, role: 'doctor' });
+            if (!doctor) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Selected doctor was not found in your clinic."
+                });
+            }
+            validatedDoctorId = doctor._id;
+            leaveType = 'doctor_leave';
+        }
+
+        const newLeave = await Leave.create({
+            clinicId,
+            doctorId: validatedDoctorId,
+            type: leaveType,
+            title: title.trim(),
+            reason: reason ? reason.trim() : '',
+            startDate: start,
+            endDate: end
+        });
+
+        const populatedLeave = await Leave.findById(newLeave._id).populate('doctorId', 'name specialization email availableDays');
+
+        // 📢 Emit socket event to clinic room for real-time calendar updates
+        if (req.io) {
+            req.io.to(clinicId.toString()).emit('clinicLeavesUpdated', {
+                action: 'created',
+                leave: populatedLeave
+            });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: leaveType === 'doctor_leave' ? "Doctor leave added successfully." : "Clinic holiday added successfully.",
+            data: populatedLeave
+        });
+    } catch (error) {
+        console.error('❌ Error adding clinic leave:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Delete a Clinic Holiday or Doctor Leave
+ * @route   DELETE /api/clinic/leaves/:leaveId
+ * @access  Private (Admin)
+ */
+exports.deleteClinicLeave = async (req, res) => {
+    try {
+        const Leave = require('../models/Leave');
+        const clinicId = req.user.clinicId;
+        const { leaveId } = req.params;
+
+        const deleted = await Leave.findOneAndDelete({ _id: leaveId, clinicId });
+        if (!deleted) {
+            return res.status(404).json({
+                success: false,
+                message: "Leave record not found or already deleted."
+            });
+        }
+
+        // 📢 Emit socket event to clinic room
+        if (req.io) {
+            req.io.to(clinicId.toString()).emit('clinicLeavesUpdated', {
+                action: 'deleted',
+                leaveId
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Leave record removed successfully."
+        });
+    } catch (error) {
+        console.error('❌ Error deleting clinic leave:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Update a doctor's weekly available working days
+ * @route   PATCH /api/clinic/doctor-schedule/:doctorId
+ * @access  Private (Admin)
+ */
+exports.updateDoctorSchedule = async (req, res) => {
+    try {
+        const User = require('../models/User');
+        const clinicId = req.user.clinicId;
+        const { doctorId } = req.params;
+        const { availableDays } = req.body;
+
+        if (!Array.isArray(availableDays)) {
+            return res.status(400).json({
+                success: false,
+                message: "availableDays must be an array of weekdays."
+            });
+        }
+
+        const validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+        const cleanDays = availableDays.map(d => String(d).toLowerCase().trim()).filter(d => validDays.includes(d));
+
+        const updatedDoctor = await User.findOneAndUpdate(
+            { _id: doctorId, clinicId, role: 'doctor' },
+            { availableDays: cleanDays },
+            { new: true }
+        ).select('_id name specialization availableDays isAvailable');
+
+        if (!updatedDoctor) {
+            return res.status(404).json({
+                success: false,
+                message: "Doctor not found in this clinic."
+            });
+        }
+
+        if (req.io) {
+            req.io.to(clinicId.toString()).emit('clinicLeavesUpdated', {
+                action: 'doctorScheduleUpdated',
+                doctorId,
+                availableDays: cleanDays
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Schedule updated for Dr. ${updatedDoctor.name}.`,
+            data: updatedDoctor
+        });
+    } catch (error) {
+        console.error('❌ Error updating doctor schedule:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Get all upcoming clinic holidays & doctor leaves (PUBLIC)
+ * @route   GET /api/clinic/public/leaves/:clinicId
+ * @access  Public
+ */
+exports.getPublicClinicLeaves = async (req, res) => {
+    try {
+        const Leave = require('../models/Leave');
+        const User = require('../models/User');
+        const { clinicId } = req.params;
+
+        const clinic = await Clinic.findById(clinicId).select('name workingDays openingTime closingTime');
+        if (!clinic) {
+            return res.status(404).json({
+                success: false,
+                message: "Clinic not found"
+            });
+        }
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Fetch all active or future leaves
+        const leaves = await Leave.find({
+            clinicId,
+            endDate: { $gte: today }
+        }).populate('doctorId', 'name specialization availableDays').sort({ startDate: 1 });
+
+        const holidays = leaves.filter(l => !l.doctorId || l.type === 'clinic_holiday');
+        const doctorLeaves = leaves.filter(l => l.doctorId && l.type === 'doctor_leave');
+
+        // Also fetch doctors for quick lookup of doctor schedules
+        const doctors = await User.find({
+            clinicId,
+            role: 'doctor',
+            isActive: true
+        }).select('_id name specialization availableDays isAvailable');
+
+        res.status(200).json({
+            success: true,
+            data: {
+                workingDays: clinic.workingDays && clinic.workingDays.length ? clinic.workingDays : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
+                holidays,
+                doctorLeaves,
+                doctors
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error fetching public clinic leaves:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

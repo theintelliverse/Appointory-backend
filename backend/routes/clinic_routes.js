@@ -11,11 +11,40 @@ router.get('/public/queues-live', clinicController.getAllClinicsQueues);
 router.get('/public/doctors/:clinicId', clinicController.getClinicDoctors);
 router.get('/public/booked-slots/:clinicId/:doctorId', clinicController.getBookedSlots);
 router.get('/public/:clinicId', clinicController.getPublicClinicDetails);
+router.get('/public/leaves/:clinicId', clinicController.getPublicClinicLeaves);
 
 /**
  * PROTECTED ROUTES (Admin Only)
  * All routes below require the user to be logged in and have the 'admin' role.
  */
+
+/**
+ * @route   GET /api/clinic/leaves
+ * @desc    Get all leaves & holidays for the clinic
+ * @access  Private (Admin)
+ */
+router.get('/leaves', protect, authorize('admin'), clinicController.getClinicLeaves);
+
+/**
+ * @route   POST /api/clinic/leaves
+ * @desc    Add a new holiday or doctor leave
+ * @access  Private (Admin)
+ */
+router.post('/leaves', protect, authorize('admin'), clinicController.addClinicLeave);
+
+/**
+ * @route   DELETE /api/clinic/leaves/:leaveId
+ * @desc    Delete a leave or holiday
+ * @access  Private (Admin)
+ */
+router.delete('/leaves/:leaveId', protect, authorize('admin'), clinicController.deleteClinicLeave);
+
+/**
+ * @route   PATCH /api/clinic/doctor-schedule/:doctorId
+ * @desc    Update a doctor's weekly available working days
+ * @access  Private (Admin)
+ */
+router.patch('/doctor-schedule/:doctorId', protect, authorize('admin'), clinicController.updateDoctorSchedule);
 
 /**
  * @route   GET /api/clinic/me
