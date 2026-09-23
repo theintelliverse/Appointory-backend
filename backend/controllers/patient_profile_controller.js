@@ -9,31 +9,44 @@ exports.getPatientProfile = async (req, res) => {
     try {
         console.log("👤 Token Payload:", req.user);
 
-        if (!req.user || !req.user.phone) {
+        if (!req.user || (!req.user.phone && !req.user.id)) {
             return res.status(401).json({ success: false, message: "Invalid session." });
         }
 
-        // 🔍 THE FIX: Clean the phone number and use Regex
-        // This extracts the last 10 digits to ignore country codes
-        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
-        const phoneRegex = new RegExp(cleanPhone + '$');
+        const rawPhone = req.user.phone || '';
+        const cleanPhone = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
+        const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
+        const patientId = req.user.id || req.user._id;
 
-        console.log("🔍 Searching for normalized phone pattern:", cleanPhone);
+        console.log("🔍 Searching for patient profile:", { patientId, cleanPhone });
 
-        // 🚀 PERFORM DUAL LOOKUP using Regex
+        // 🚀 PERFORM LOOKUP by ID first, then Phone
+        let patientDoc = null;
+        if (patientId) {
+            try {
+                patientDoc = await Patient.findById(patientId);
+            } catch (idErr) {
+                console.warn("Invalid ObjectId in token, falling back to phone query:", idErr.message);
+            }
+        }
+
         const [regexMatchedProfiles, regexMatchedVisits] = await Promise.all([
-            Patient.find({ phone: phoneRegex }).sort({ updatedAt: -1 }),
-            MedicalRecord.find({ patientPhone: phoneRegex })
+            phoneRegex ? Patient.find({ phone: phoneRegex }).sort({ updatedAt: -1 }) : Promise.resolve([]),
+            phoneRegex ? MedicalRecord.find({ patientPhone: phoneRegex })
                 .populate('clinicId', 'name address')
                 .populate('doctorId', 'name specialization')
-                .sort({ visitDate: -1 })
+                .sort({ visitDate: -1 }) : Promise.resolve([])
         ]);
 
+        let lockerProfiles = regexMatchedProfiles || [];
+        if (patientDoc && !lockerProfiles.some(p => p._id.toString() === patientDoc._id.toString())) {
+            lockerProfiles.unshift(patientDoc);
+        }
+
         // Fallback for mixed formatting: normalize digits and match by last 10.
-        let lockerProfiles = regexMatchedProfiles;
-        if (!lockerProfiles || lockerProfiles.length === 0) {
+        if (cleanPhone && (!lockerProfiles || lockerProfiles.length === 0)) {
             const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
-                .select('name phone age gender bloodGroup documents vitals updatedAt')
+                .select('name phone age gender bloodGroup email address allergies dob documents vitals updatedAt')
                 .sort({ updatedAt: -1 });
 
             lockerProfiles = allProfiles.filter((profile) => {
@@ -42,11 +55,11 @@ exports.getPatientProfile = async (req, res) => {
             });
         }
 
-        const lockerProfile = lockerProfiles?.[0] || null;
+        const lockerProfile = patientDoc || lockerProfiles?.[0] || null;
 
         // Fallback for mixed formatting in MedicalRecord.patientPhone
         let visitHistory = regexMatchedVisits;
-        if (!visitHistory || visitHistory.length === 0) {
+        if (cleanPhone && (!visitHistory || visitHistory.length === 0)) {
             const allVisits = await MedicalRecord.find({ patientPhone: { $exists: true, $ne: null } })
                 .populate('clinicId', 'name address')
                 .populate('doctorId', 'name specialization')
@@ -58,19 +71,9 @@ exports.getPatientProfile = async (req, res) => {
             });
         }
 
-        // Logic check: Allow either to exist
-        if (!lockerProfile && (!visitHistory || visitHistory.length === 0)) {
-            console.warn(`❌ No data found in either collection for: ${cleanPhone}`);
-            return res.status(404).json({
-                success: false,
-                message: "No health records found for this number."
-            });
-        }
-
         // 🧩 MERGE DATA - Map MedicalRecord to medicalHistory format
         const medicalHistory = (visitHistory || []).map(visit => {
             const medicineData = visit.medicines || [];
-            console.log(`📋 Visit ${visit._id} - Medicines:`, medicineData); // Debug log
             return {
                 visitId: visit._id,
                 date: visit.visitDate,
@@ -78,8 +81,8 @@ exports.getPatientProfile = async (req, res) => {
                 clinicName: visit.clinicId?.name || 'Unknown Clinic',
                 diagnosis: visit.diagnosis || visit.notes?.split('\n')[0] || 'N/A',
                 symptoms: visit.notes || '',
-                prescription: visit.notes || '', // Use notes as prescription for now
-                medicines: medicineData // Include medicines from MedicalRecord
+                prescription: visit.notes || '',
+                medicines: medicineData
             };
         });
 
@@ -100,73 +103,111 @@ exports.getPatientProfile = async (req, res) => {
             .sort((a, b) => new Date(b.recordedAt || 0) - new Date(a.recordedAt || 0));
 
         const responseData = {
-            name: lockerProfile?.name || visitHistory[0]?.patientName || "Valued Patient",
-            phone: req.user.phone,
-            age: lockerProfile?.age,
-            gender: lockerProfile?.gender,
-            bloodGroup: lockerProfile?.bloodGroup,
-            documents: documents,  // ✅ Changed from digitalLocker
-            medicalHistory: medicalHistory,  // ✅ Changed from visitHistory
-            visitHistory: medicalHistory,  // ✅ Backward compatibility alias
-            vitals: vitals,  // ✅ Added vitals array
+            _id: lockerProfile?._id || patientId,
+            name: lockerProfile?.name || visitHistory[0]?.patientName || req.user.name || "Valued Patient",
+            phone: lockerProfile?.phone || cleanPhone || req.user.phone,
+            email: lockerProfile?.email || "",
+            age: lockerProfile?.age || null,
+            gender: lockerProfile?.gender || null,
+            bloodGroup: lockerProfile?.bloodGroup || null,
+            address: lockerProfile?.address || "",
+            allergies: lockerProfile?.allergies || "",
+            dob: lockerProfile?.dob || null,
+            documents: documents,
+            medicalHistory: medicalHistory,
+            visitHistory: medicalHistory,
+            vitals: vitals,
             lastUpdated: Date.now()
         };
 
         console.log(`✅ Success: Matched profiles: ${lockerProfiles.length}, Documents: ${documents.length}, Vitals: ${vitals.length}`);
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             data: responseData
         });
 
     } catch (error) {
         console.error("❌ Dual-Lookup Profile Error:", error.message);
-        res.status(500).json({ success: false, message: "Internal server error" });
+        return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
 
 /**
- * @desc    Update Patient Basic Info (Optional future addition)
+ * @desc    Update Patient Basic Info
  */
 exports.updatePatientProfile = async (req, res) => {
     try {
-        const { name, age, gender, bloodGroup, bio } = req.body;
+        const { name, age, gender, bloodGroup, bio, email, address, allergies, dob } = req.body;
         
         // Find patient by ID or Phone (from token)
-        const patientId = req.user.id;
-        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
-        const phoneRegex = new RegExp(cleanPhone + '$');
+        const patientId = req.user.id || req.user._id;
+        const rawPhone = req.user.phone || '';
+        const cleanPhone = rawPhone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
 
-        let patient = await Patient.findById(patientId);
-        if (!patient) {
+        let patient = null;
+        if (patientId) {
+            try {
+                patient = await Patient.findById(patientId);
+            } catch (e) {
+                console.warn("Could not find patient by ObjectId:", e.message);
+            }
+        }
+
+        if (!patient && phoneRegex) {
             patient = await Patient.findOne({ phone: phoneRegex });
         }
 
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ phone: cleanPhone });
+        }
+
         if (!patient) {
-            return res.status(404).json({ success: false, message: "Patient profile not found" });
+            // Create patient record if it didn't exist yet for this authenticated user
+            patient = new Patient({
+                phone: cleanPhone || rawPhone,
+                name: name || "Valued Patient"
+            });
         }
 
         // Update fields
-        if (name) patient.name = name;
-        if (age) patient.age = parseInt(age);
-        if (gender) patient.gender = gender;
-        if (bloodGroup) patient.bloodGroup = bloodGroup;
-        if (bio) patient.bio = bio;
+        if (name !== undefined) patient.name = name;
+        if (age !== undefined) patient.age = age ? parseInt(age) : null;
+        if (gender !== undefined) patient.gender = gender;
+        if (bloodGroup !== undefined) patient.bloodGroup = bloodGroup;
+        if (bio !== undefined) patient.bio = bio;
+        if (email !== undefined) patient.email = email;
+        if (address !== undefined) patient.address = address;
+        if (allergies !== undefined) patient.allergies = allergies;
+        if (dob !== undefined) patient.dob = dob;
 
         await patient.save();
 
-        // 📢 SOCKET UPDATE: If a doctor is currently viewing this patient
+        // 📢 SOCKET UPDATE: If a doctor or client is currently listening
         if (req.io && patient) {
             req.io.to(patient._id.toString()).emit('patientProfileUpdated', patient);
         }
 
-        res.status(200).json({ 
+        return res.status(200).json({ 
             success: true, 
             message: "Profile updated successfully",
-            data: patient 
+            data: {
+                _id: patient._id,
+                name: patient.name,
+                phone: patient.phone,
+                email: patient.email,
+                age: patient.age,
+                gender: patient.gender,
+                bloodGroup: patient.bloodGroup,
+                address: patient.address,
+                allergies: patient.allergies,
+                dob: patient.dob
+            }
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error("Update patient profile error:", error);
+        return res.status(500).json({ success: false, message: error.message });
     }
 };
 
