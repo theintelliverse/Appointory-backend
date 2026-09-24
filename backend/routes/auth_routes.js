@@ -70,6 +70,7 @@ router.get('/patient/profile', protectPatient, getPatientProfile);
 router.patch('/patient/update-profile', protectPatient, require('../controllers/patient_profile_controller').updatePatientProfile);
 router.post('/patient/book-appointment', protectPatient, patientController.bookAppointment);
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
+router.get('/patient/invoices', protectPatient, require('../controllers/billing_controller').getPatientInvoices);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
 // Middleware to accept either 'document' or 'file' field and handle multer errors cleanly

@@ -1,5 +1,6 @@
 const Patient = require('../models/Patient');
-const MedicalRecord = require('../models/MedicalRecord')
+const MedicalRecord = require('../models/MedicalRecord');
+const PatientInvoice = require('../models/PatientInvoice');
 /**
  * @desc    Get current patient profile & medical history
  * @route   GET /api/patient/me
@@ -30,12 +31,16 @@ exports.getPatientProfile = async (req, res) => {
             }
         }
 
-        const [regexMatchedProfiles, regexMatchedVisits] = await Promise.all([
+        const [regexMatchedProfiles, regexMatchedVisits, patientInvoices] = await Promise.all([
             phoneRegex ? Patient.find({ phone: phoneRegex }).sort({ updatedAt: -1 }) : Promise.resolve([]),
             phoneRegex ? MedicalRecord.find({ patientPhone: phoneRegex })
                 .populate('clinicId', 'name address')
                 .populate('doctorId', 'name specialization')
-                .sort({ visitDate: -1 }) : Promise.resolve([])
+                .sort({ visitDate: -1 }) : Promise.resolve([]),
+            phoneRegex ? PatientInvoice.find({ patientPhone: phoneRegex })
+                .populate('clinicId', 'name address contactPhone clinicCode')
+                .sort({ billingDate: -1 })
+                .lean() : Promise.resolve([])
         ]);
 
         let lockerProfiles = regexMatchedProfiles || [];
@@ -117,6 +122,7 @@ exports.getPatientProfile = async (req, res) => {
             medicalHistory: medicalHistory,
             visitHistory: medicalHistory,
             vitals: vitals,
+            invoices: patientInvoices || [],
             lastUpdated: Date.now()
         };
 

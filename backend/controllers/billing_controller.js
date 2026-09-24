@@ -343,7 +343,7 @@ exports.getRevenueStats = async (req, res) => {
 exports.getInvoices = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;
-        const { search, billingType, status } = req.query;
+        const { search, billingType, status, startDate, endDate } = req.query;
 
         const query = { clinicId };
 
@@ -351,8 +351,22 @@ exports.getInvoices = async (req, res) => {
             query.billingType = billingType;
         }
 
-        if (status) {
+        if (status && status !== 'all') {
             query.paymentStatus = status;
+        }
+
+        if (startDate || endDate) {
+            query.billingDate = {};
+            if (startDate) {
+                const s = new Date(startDate);
+                s.setHours(0, 0, 0, 0);
+                query.billingDate.$gte = s;
+            }
+            if (endDate) {
+                const e = new Date(endDate);
+                e.setHours(23, 59, 59, 999);
+                query.billingDate.$lte = e;
+            }
         }
 
         if (search && search.trim() !== '') {
@@ -363,15 +377,29 @@ exports.getInvoices = async (req, res) => {
             ];
         }
 
-        const invoices = await PatientInvoice.find(query)
-            .sort({ billingDate: -1 })
-            .limit(100)
-            .lean();
+        const page = parseInt(req.query.page) || 1;
+        const limitParam = req.query.limit;
+        const isAll = limitParam === 'all' || limitParam === '-1';
+        const limit = isAll ? 0 : (parseInt(limitParam) || (req.query.page ? 10 : 500));
+        const skip = isAll ? 0 : (page - 1) * limit;
+
+        const totalCount = await PatientInvoice.countDocuments(query);
+        let invoiceQuery = PatientInvoice.find(query)
+            .populate('clinicId', 'name address contactPhone clinicCode')
+            .sort({ billingDate: -1 });
+
+        if (!isAll && limit > 0) {
+            invoiceQuery = invoiceQuery.skip(skip).limit(limit);
+        }
+        const invoices = await invoiceQuery.lean();
 
         const revenueStats = await getRevenueMetricsHelper(clinicId);
 
         return res.status(200).json({
             success: true,
+            totalCount,
+            currentPage: page,
+            totalPages: limit > 0 ? Math.ceil(totalCount / limit) : 1,
             count: invoices.length,
             invoices,
             revenueStats
@@ -603,6 +631,55 @@ exports.bookAppointmentForInvoice = async (req, res) => {
     } catch (error) {
         console.error("Book appointment for invoice error:", error);
         return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 📱 GET PATIENT INVOICES (FOR PATIENT LOCKER & PORTAL) ---
+exports.getPatientInvoices = async (req, res) => {
+    try {
+        if (!req.user || (!req.user.phone && !req.user.id)) {
+            return res.status(401).json({ success: false, message: "Invalid session." });
+        }
+
+        const rawPhone = req.user.phone || '';
+        const cleanPhone = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
+        const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
+
+        if (!phoneRegex) {
+            return res.status(200).json({ success: true, count: 0, totalCount: 0, invoices: [] });
+        }
+
+        const page = parseInt(req.query.page) || 1;
+        const limitParam = req.query.limit;
+        const isAll = limitParam === 'all' || limitParam === '-1';
+        const limit = isAll ? 0 : (parseInt(limitParam) || 10);
+        const skip = isAll ? 0 : (page - 1) * limit;
+
+        const totalCount = await PatientInvoice.countDocuments({ patientPhone: phoneRegex });
+        let invQuery = PatientInvoice.find({ patientPhone: phoneRegex })
+            .populate('clinicId', 'name address contactPhone clinicCode logo')
+            .sort({ billingDate: -1 });
+
+        if (!isAll && limit > 0) {
+            invQuery = invQuery.skip(skip).limit(limit);
+        }
+
+        const invoices = await invQuery.lean();
+
+        return res.status(200).json({
+            success: true,
+            totalCount,
+            currentPage: page,
+            totalPages: limit > 0 ? Math.ceil(totalCount / limit) : 1,
+            count: invoices.length,
+            invoices
+        });
+    } catch (error) {
+        console.error("Get Patient Invoices Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch patient invoices: " + error.message
+        });
     }
 };
 

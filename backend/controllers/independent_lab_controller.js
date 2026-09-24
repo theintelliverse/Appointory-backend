@@ -392,13 +392,27 @@ exports.createLabInvoice = async (req, res) => {
 exports.getLabInvoices = async (req, res) => {
     try {
         const labId = req.lab.id;
-        const { search, status } = req.query;
+        const { search, status, startDate, endDate } = req.query;
 
         const PatientInvoice = require('../models/PatientInvoice');
         const query = { clinicId: labId, billingType: 'lab' };
 
         if (status && status !== 'all') {
             query.paymentStatus = status;
+        }
+
+        if (startDate || endDate) {
+            query.billingDate = {};
+            if (startDate) {
+                const s = new Date(startDate);
+                s.setHours(0, 0, 0, 0);
+                query.billingDate.$gte = s;
+            }
+            if (endDate) {
+                const e = new Date(endDate);
+                e.setHours(23, 59, 59, 999);
+                query.billingDate.$lte = e;
+            }
         }
 
         if (search) {
@@ -410,10 +424,25 @@ exports.getLabInvoices = async (req, res) => {
             ];
         }
 
-        const invoices = await PatientInvoice.find(query).sort({ createdAt: -1 }).lean();
+        const page = parseInt(req.query.page) || 1;
+        const limitParam = req.query.limit;
+        const isAll = limitParam === 'all' || limitParam === '-1';
+        const limit = isAll ? 0 : (parseInt(limitParam) || (req.query.page ? 10 : 500));
+        const skip = isAll ? 0 : (page - 1) * limit;
+
+        const totalCount = await PatientInvoice.countDocuments(query);
+        let invQuery = PatientInvoice.find(query).sort({ createdAt: -1 });
+        if (!isAll && limit > 0) {
+            invQuery = invQuery.skip(skip).limit(limit);
+        }
+
+        const invoices = await invQuery.lean();
 
         res.status(200).json({
             success: true,
+            totalCount,
+            currentPage: page,
+            totalPages: limit > 0 ? Math.ceil(totalCount / limit) : 1,
             count: invoices.length,
             invoices
         });
