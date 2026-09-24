@@ -16,6 +16,12 @@ const independentLabSchema = mongoose.Schema({
     approvalStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
     openingTime: { type: String, default: '08:00' },
     closingTime: { type: String, default: '20:00' },
+    workingDays: {
+        type: [String],
+        default: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+    },
+    isAvailable: { type: Boolean, default: true },
+    liveUntilDate: { type: Date, default: null },
 
     // Subscription & Billing Details
     isPremium: { type: Boolean, default: false },

@@ -99,12 +99,40 @@ exports.resendCredentials = async (req, res) => {
 // --- 📋 GET ALL STAFF ---
 exports.getAllStaff = async (req, res) => {
     try {
+        const Leave = require('../models/Leave');
         const clinicId = req.user.clinicId;
         const staffMembers = await User.find({ clinicId })
             .select('-password')
             .sort({ createdAt: -1 });
 
-        res.status(200).json({ success: true, count: staffMembers.length, staff: staffMembers });
+        // 🗓️ Annotate doctors with today's leave status (same as getClinicDoctors)
+        const doctorIds = staffMembers.filter(s => s.role === 'doctor').map(s => s._id);
+        const now = new Date();
+        const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+        const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+
+        const todayLeaves = await Leave.find({
+            clinicId,
+            type: 'doctor_leave',
+            doctorId: { $in: doctorIds },
+            startDate: { $lte: todayEnd },
+            endDate:   { $gte: todayStart }
+        }).select('doctorId title');
+
+        const leaveMap = {};
+        todayLeaves.forEach(l => { leaveMap[l.doctorId.toString()] = l.title; });
+
+        const annotated = staffMembers.map(s => {
+            const plain = s.toObject();
+            if (s.role === 'doctor') {
+                const leaveTitle = leaveMap[s._id.toString()];
+                plain.isOnLeaveToday = !!leaveTitle;
+                plain.leaveTodayTitle = leaveTitle || null;
+            }
+            return plain;
+        });
+
+        res.status(200).json({ success: true, count: annotated.length, staff: annotated });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -113,12 +141,22 @@ exports.getAllStaff = async (req, res) => {
 exports.toggleAvailability = async (req, res) => {
     try {
         const { staffId } = req.params;
+        const { liveUntilDate } = req.body; // optional: ISO date string for multi-day live
         const targetId = staffId === 'me' ? req.user.id : staffId;
 
         const user = await User.findById(targetId);
         if (!user) return res.status(404).json({ message: "Staff member not found" });
 
         user.isAvailable = !user.isAvailable;
+
+        if (!user.isAvailable) {
+            // Going LIVE — set liveUntilDate if provided, else clear (live today only)
+            user.liveUntilDate = liveUntilDate ? new Date(liveUntilDate) : null;
+        } else {
+            // Going back to available — clear live range
+            user.liveUntilDate = null;
+        }
+
         await user.save();
 
         // 📢 DEBUG LOG
@@ -126,11 +164,12 @@ exports.toggleAvailability = async (req, res) => {
         if (req.io) {
             req.io.to(user.clinicId.toString()).emit('doctorStatusChanged', {
                 doctorId: user._id,
-                isAvailable: user.isAvailable
+                isAvailable: user.isAvailable,
+                liveUntilDate: user.liveUntilDate
             });
         }
 
-        res.status(200).json({ success: true, isAvailable: user.isAvailable });
+        res.status(200).json({ success: true, isAvailable: user.isAvailable, liveUntilDate: user.liveUntilDate });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 };
 // --- 🏥 PUBLIC: GET DOCTORS ---

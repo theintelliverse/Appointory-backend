@@ -464,3 +464,43 @@ exports.getLabBillingStats = async (req, res) => {
     }
 };
 
+/**
+ * 💰 Settle Balance Due on a Lab Invoice (Independent Lab)
+ * PATCH /api/lab-connect/billing/invoices/:id/settle-due
+ */
+exports.settleLabInvoiceDue = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const { id } = req.params;
+        const { amount, paymentMode } = req.body;
+
+        const PatientInvoice = require('../models/PatientInvoice');
+        const invoice = await PatientInvoice.findOne({ _id: id, clinicId: labId, billingType: 'lab' });
+
+        if (!invoice) {
+            return res.status(404).json({ success: false, message: 'Lab invoice not found.' });
+        }
+
+        const settleAmount = Number(amount) || invoice.remainingDue;
+        const newPaid = invoice.paidAmount + settleAmount;
+        const newDue = Math.max(0, invoice.totalAmount - newPaid);
+
+        invoice.paidAmount = newPaid;
+        invoice.remainingDue = newDue;
+        invoice.paymentStatus = newDue === 0 ? 'Paid' : 'Partially Paid';
+        if (paymentMode) invoice.paymentMode = paymentMode;
+
+        await invoice.save();
+
+        res.status(200).json({
+            success: true,
+            message: `Successfully collected ₹${settleAmount}. Remaining due: ₹${newDue}.`,
+            invoice
+        });
+    } catch (error) {
+        console.error('❌ Error settling lab invoice due:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+

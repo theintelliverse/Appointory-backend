@@ -243,6 +243,31 @@ exports.getPublicLabProfile = async (req, res) => {
 
         const connectedClinics = connections.map(c => c.clinicId).filter(Boolean);
 
+        // Fetch upcoming holidays & leaves for this lab
+        const Leave = require('../models/Leave');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const holidays = await Leave.find({
+            labId: lab._id,
+            endDate: { $gte: today }
+        }).sort({ startDate: 1 });
+
+        const now = new Date();
+        const todayWeekday = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+        const workingDays = lab.workingDays && lab.workingDays.length
+            ? lab.workingDays.map(d => d.toLowerCase())
+            : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+        const isWeeklyOffToday = !workingDays.includes(todayWeekday);
+        const todayHoliday = holidays.find(h => {
+            const s = new Date(h.startDate);
+            const e = new Date(h.endDate);
+            return now >= s && now <= e;
+        });
+
+        const isLivePaused = lab.isAvailable === false || (lab.liveUntilDate && new Date(lab.liveUntilDate) >= now);
+
         const baseUrl = getBaseUrl(req);
         const profileUrl = `${baseUrl}/l/${lab.slug || lab._id}`;
 
@@ -284,6 +309,15 @@ exports.getPublicLabProfile = async (req, res) => {
             data: {
                 lab,
                 connectedClinics,
+                workingDays,
+                holidays,
+                scheduleStatus: {
+                    isWeeklyOffToday,
+                    isOnHolidayToday: !!todayHoliday,
+                    todayHoliday: todayHoliday ? { title: todayHoliday.title, reason: todayHoliday.reason } : null,
+                    isLivePaused,
+                    isOpenToday: !isWeeklyOffToday && !todayHoliday && !isLivePaused
+                },
                 jsonLd,
                 meta: {
                     title: lab.seoTitle || `${lab.labName} - Diagnostic & Pathology Lab Services`,

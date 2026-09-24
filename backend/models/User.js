@@ -19,6 +19,7 @@ const userSchema = mongoose.Schema({
   // Doctor-specific fields
   specialization: { type: String },
   isAvailable: { type: Boolean, default: true },
+  liveUntilDate: { type: Date, default: null }, // null = live only today; set to future date = live until that date
   profileImage: { type: String, default: "" },
   bio: { type: String },
   experience: { type: Number }, // years

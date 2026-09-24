@@ -81,11 +81,48 @@ exports.sendConnectionRequest = async (req, res) => {
 exports.getClinicConnections = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;
+        const Leave = require('../models/Leave');
         const connections = await LabConnection.find({ clinicId })
-            .populate('labId', 'labName labCode address phone logo')
+            .populate('labId', 'labName labCode address phone logo workingDays openingTime closingTime isAvailable liveUntilDate')
             .sort({ createdAt: -1 });
 
-        res.status(200).json({ success: true, data: connections });
+        const now = new Date();
+        const todayWeekday = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+
+        // Check today's leaves for each connected lab
+        const labIds = connections.map(c => c.labId?._id).filter(Boolean);
+        const todayLeaves = await Leave.find({
+            labId: { $in: labIds },
+            startDate: { $lte: now },
+            endDate: { $gte: now }
+        });
+
+        const leaveMap = {};
+        todayLeaves.forEach(l => {
+            leaveMap[l.labId.toString()] = l;
+        });
+
+        const enrichedConnections = connections.map(conn => {
+            const obj = conn.toObject();
+            if (obj.labId) {
+                const lab = obj.labId;
+                const workingDays = lab.workingDays && lab.workingDays.length
+                    ? lab.workingDays.map(d => d.toLowerCase())
+                    : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+                
+                const isWeeklyOff = !workingDays.includes(todayWeekday);
+                const holiday = leaveMap[lab._id.toString()];
+
+                obj.labId.isWeeklyOffToday = isWeeklyOff;
+                obj.labId.isOnHolidayToday = !!holiday;
+                obj.labId.todayHolidayTitle = holiday ? holiday.title : null;
+                obj.labId.todayHolidayReason = holiday ? holiday.reason : null;
+                obj.labId.isClosedToday = isWeeklyOff || !!holiday || lab.isAvailable === false;
+            }
+            return obj;
+        });
+
+        res.status(200).json({ success: true, data: enrichedConnections });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -632,6 +669,196 @@ exports.updateLabSettings = async (req, res) => {
         
         res.status(200).json({ success: true, message: 'Settings saved successfully.', data: settings });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🏖️ LAB HOLIDAYS & SCHEDULE (Independent Lab)
+// =============================================
+exports.getLabLeaves = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const Leave = require('../models/Leave');
+        const IndependentLab = require('../models/IndependentLab');
+
+        const [lab, leaves] = await Promise.all([
+            IndependentLab.findById(labId).select('workingDays isAvailable liveUntilDate openingTime closingTime labName'),
+            Leave.find({ labId }).sort({ startDate: 1 })
+        ]);
+
+        if (!lab) {
+            return res.status(404).json({ success: false, message: 'Lab not found.' });
+        }
+
+        const now = new Date();
+        const todayWeekday = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+        const workingDays = lab.workingDays && lab.workingDays.length
+            ? lab.workingDays.map(d => d.toLowerCase())
+            : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+        const isWeeklyOffToday = !workingDays.includes(todayWeekday);
+
+        // Check if today falls in any holiday/leave
+        const todayHoliday = leaves.find(l => {
+            const s = new Date(l.startDate);
+            const e = new Date(l.endDate);
+            return now >= s && now <= e;
+        });
+
+        const isLiveUntilActive = lab.liveUntilDate && new Date(lab.liveUntilDate) >= now;
+        const isCurrentlyAvailable = lab.isAvailable && !todayHoliday && !isWeeklyOffToday;
+
+        res.status(200).json({
+            success: true,
+            data: {
+                leaves,
+                workingDays,
+                isWeeklyOffToday,
+                isOnHolidayToday: !!todayHoliday,
+                todayHoliday: todayHoliday ? { title: todayHoliday.title, reason: todayHoliday.reason } : null,
+                isAvailable: lab.isAvailable,
+                liveUntilDate: lab.liveUntilDate,
+                isLiveUntilActive,
+                isCurrentlyAvailable,
+                openingTime: lab.openingTime || '08:00',
+                closingTime: lab.closingTime || '20:00'
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error fetching lab leaves:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.addLabLeave = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const Leave = require('../models/Leave');
+        const { title, reason, startDate, endDate, type } = req.body;
+
+        if (!title || !startDate || !endDate) {
+            return res.status(400).json({
+                success: false,
+                message: 'Title, start date, and end date are required.'
+            });
+        }
+
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid start or end date format.'
+            });
+        }
+
+        if (start > end) {
+            return res.status(400).json({
+                success: false,
+                message: 'Start date cannot be after end date.'
+            });
+        }
+
+        start.setHours(0, 0, 0, 0);
+        end.setHours(23, 59, 59, 999);
+
+        const newLeave = await Leave.create({
+            labId,
+            type: type || 'lab_holiday',
+            title: title.trim(),
+            reason: reason ? reason.trim() : '',
+            startDate: start,
+            endDate: end
+        });
+
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('labLeavesUpdated', {
+                action: 'created',
+                leave: newLeave
+            });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Lab holiday/leave scheduled successfully.',
+            data: newLeave
+        });
+    } catch (error) {
+        console.error('❌ Error adding lab leave:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.deleteLabLeave = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const Leave = require('../models/Leave');
+        const { leaveId } = req.params;
+
+        const deleted = await Leave.findOneAndDelete({ _id: leaveId, labId });
+        if (!deleted) {
+            return res.status(404).json({
+                success: false,
+                message: 'Leave record not found or already deleted.'
+            });
+        }
+
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('labLeavesUpdated', {
+                action: 'deleted',
+                leaveId
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Leave record removed successfully.'
+        });
+    } catch (error) {
+        console.error('❌ Error deleting lab leave:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.updateLabSchedule = async (req, res) => {
+    try {
+        const labId = req.lab.id;
+        const IndependentLab = require('../models/IndependentLab');
+        const { workingDays, isAvailable, liveUntilDate, openingTime, closingTime } = req.body;
+
+        const updateData = {};
+        if (Array.isArray(workingDays)) {
+            const validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+            updateData.workingDays = workingDays.map(d => String(d).toLowerCase().trim()).filter(d => validDays.includes(d));
+        }
+        if (typeof isAvailable === 'boolean') updateData.isAvailable = isAvailable;
+        if (liveUntilDate !== undefined) updateData.liveUntilDate = liveUntilDate ? new Date(liveUntilDate) : null;
+        if (openingTime) updateData.openingTime = openingTime;
+        if (closingTime) updateData.closingTime = closingTime;
+
+        const updated = await IndependentLab.findByIdAndUpdate(labId, updateData, { new: true })
+            .select('workingDays isAvailable liveUntilDate openingTime closingTime labName');
+
+        if (!updated) {
+            return res.status(404).json({ success: false, message: 'Lab not found.' });
+        }
+
+        if (req.io) {
+            req.io.to(`lab_${labId}`).emit('labLeavesUpdated', {
+                action: 'scheduleUpdated',
+                lab: updated
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Lab operating schedule updated successfully.',
+            data: updated
+        });
+    } catch (error) {
+        console.error('❌ Error updating lab schedule:', error.message);
         res.status(500).json({ success: false, message: error.message });
     }
 };

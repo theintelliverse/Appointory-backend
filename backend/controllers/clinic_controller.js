@@ -280,6 +280,7 @@ exports.getAllClinics = async (req, res) => {
 exports.getClinicDoctors = async (req, res) => {
     try {
         const User = require('../models/User');
+        const Leave = require('../models/Leave');
         const { clinicId } = req.params;
 
         console.log(`🔍 Searching for doctors with clinicId: ${clinicId}, role: doctor, isActive: true`);
@@ -288,14 +289,42 @@ exports.getClinicDoctors = async (req, res) => {
             clinicId,
             role: 'doctor',
             isActive: true
-        }).select('_id name specialization isAvailable experience education bio profileImage clinicLocation clinicContact phoneNumber availableDays');
+        }).select('_id name specialization isAvailable liveUntilDate experience education bio profileImage clinicLocation clinicContact phoneNumber availableDays');
 
         console.log(`✅ Found ${doctors.length} doctors for clinic ${clinicId}`);
 
+        // 🗓️ Check which doctors are on leave TODAY so the booking UI can show a warning
+        const now = new Date();
+        const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+        const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+
+        const todayLeaves = await Leave.find({
+            clinicId,
+            type: 'doctor_leave',
+            doctorId: { $in: doctors.map(d => d._id) },
+            startDate: { $lte: todayEnd },
+            endDate:   { $gte: todayStart }
+        }).select('doctorId title');
+
+        // Build a fast lookup map: doctorId -> leave
+        const leaveMap = {};
+        todayLeaves.forEach(l => {
+            leaveMap[l.doctorId.toString()] = l.title;
+        });
+
+        // Annotate each doctor with leave info
+        const annotatedDoctors = doctors.map(doc => {
+            const plain = doc.toObject();
+            const leaveTitle = leaveMap[doc._id.toString()];
+            plain.isOnLeaveToday = !!leaveTitle;
+            plain.leaveTodayTitle = leaveTitle || null;
+            return plain;
+        });
+
         res.status(200).json({
             success: true,
-            data: doctors,
-            count: doctors.length,
+            data: annotatedDoctors,
+            count: annotatedDoctors.length,
             clinicId: clinicId
         });
     } catch (error) {
@@ -576,7 +605,9 @@ exports.addClinicLeave = async (req, res) => {
         let validatedDoctorId = null;
         let leaveType = type || (doctorId ? 'doctor_leave' : 'clinic_holiday');
 
-        if (doctorId) {
+        if (type === 'lab_leave') {
+            leaveType = 'lab_leave';
+        } else if (doctorId) {
             const doctor = await User.findOne({ _id: doctorId, clinicId, role: 'doctor' });
             if (!doctor) {
                 return res.status(404).json({
@@ -608,9 +639,13 @@ exports.addClinicLeave = async (req, res) => {
             });
         }
 
+        let successMessage = "Clinic holiday added successfully.";
+        if (leaveType === 'doctor_leave') successMessage = "Doctor leave added successfully.";
+        if (leaveType === 'lab_leave') successMessage = "In-House Lab leave/closure added successfully.";
+
         res.status(201).json({
             success: true,
-            message: leaveType === 'doctor_leave' ? "Doctor leave added successfully." : "Clinic holiday added successfully.",
+            message: successMessage,
             data: populatedLeave
         });
     } catch (error) {
@@ -738,8 +773,16 @@ exports.getPublicClinicLeaves = async (req, res) => {
             endDate: { $gte: today }
         }).populate('doctorId', 'name specialization availableDays').sort({ startDate: 1 });
 
-        const holidays = leaves.filter(l => !l.doctorId || l.type === 'clinic_holiday');
+        const holidays = leaves.filter(l => (!l.doctorId || l.type === 'clinic_holiday') && l.type !== 'lab_leave');
         const doctorLeaves = leaves.filter(l => l.doctorId && l.type === 'doctor_leave');
+        const labLeaves = leaves.filter(l => l.type === 'lab_leave');
+
+        const now = new Date();
+        const todayLabLeave = labLeaves.find(l => {
+            const s = new Date(l.startDate);
+            const e = new Date(l.endDate);
+            return now >= s && now <= e;
+        });
 
         // Also fetch doctors for quick lookup of doctor schedules
         const doctors = await User.find({
@@ -754,6 +797,9 @@ exports.getPublicClinicLeaves = async (req, res) => {
                 workingDays: clinic.workingDays && clinic.workingDays.length ? clinic.workingDays : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
                 holidays,
                 doctorLeaves,
+                labLeaves,
+                isLabOnLeaveToday: !!todayLabLeave,
+                labLeaveTodayTitle: todayLabLeave ? todayLabLeave.title : null,
                 doctors
             }
         });
@@ -761,4 +807,4 @@ exports.getPublicClinicLeaves = async (req, res) => {
         console.error('❌ Error fetching public clinic leaves:', error.message);
         res.status(500).json({ success: false, message: error.message });
     }
-};
+};

@@ -52,9 +52,16 @@ const independentLabCtrl = require('../controllers/independent_lab_controller');
 router.get('/settings/lab', protectLab, ctrl.getLabSettings);
 router.patch('/settings/lab', protectLab, ctrl.updateLabSettings);
 
+// Lab Holidays, Leaves & Schedule routes
+router.get('/leaves/lab', protectLab, ctrl.getLabLeaves);
+router.post('/leaves/lab', protectLab, ctrl.addLabLeave);
+router.delete('/leaves/lab/:leaveId', protectLab, ctrl.deleteLabLeave);
+router.patch('/schedule/lab', protectLab, ctrl.updateLabSchedule);
+
 // Lab Billing & Invoicing routes
 router.post('/billing/create', protectLab, independentLabCtrl.createLabInvoice);
 router.get('/billing/invoices', protectLab, independentLabCtrl.getLabInvoices);
 router.get('/billing/stats', protectLab, independentLabCtrl.getLabBillingStats);
+router.patch('/billing/invoices/:id/settle-due', protectLab, independentLabCtrl.settleLabInvoiceDue);
 
 module.exports = router;

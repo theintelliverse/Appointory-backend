@@ -7,7 +7,9 @@ const {
     getInvoiceById,
     getRevenueStats,
     getBillingSettings,
-    updateBillingSettings
+    updateBillingSettings,
+    settleInvoiceDue,
+    bookAppointmentForInvoice
 } = require('../controllers/billing_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -32,6 +34,12 @@ router.get('/invoices', authorize('receptionist', 'admin', 'doctor', 'lab'), get
 
 // 📄 Get single invoice by ID
 router.get('/invoice/:id', authorize('receptionist', 'admin', 'doctor', 'lab'), getInvoiceById);
+
+// 💰 Settle outstanding dues on an invoice
+router.patch('/invoices/:id/settle-due', authorize('receptionist', 'admin', 'doctor', 'lab'), settleInvoiceDue);
+
+// 🎫 Book appointment token for an existing invoice
+router.post('/invoices/:id/book-appointment', authorize('receptionist', 'admin', 'doctor', 'lab'), bookAppointmentForInvoice);
 
 // ⚙️ Billing Settings (Tax & Consultation Fees Config)
 router.get('/settings', authorize('receptionist', 'admin', 'doctor', 'lab'), getBillingSettings);

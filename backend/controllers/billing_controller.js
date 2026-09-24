@@ -138,7 +138,8 @@ exports.createInvoice = async (req, res) => {
             paymentMode = 'Cash',
             paymentStatus = 'Paid',
             queueId,
-            notes
+            notes,
+            bookAppointment = false // 🆕 Optional: Only book if receptionist explicitly selects it!
         } = req.body;
 
         const clinicId = req.user.clinicId;
@@ -167,7 +168,7 @@ exports.createInvoice = async (req, res) => {
             });
         }
 
-        // 2. Auto-Book Appointment Token if no active queue entry exists today
+        // 2. Link or Book Appointment Token ONLY if requested or already active
         let activeQueueId = queueId || null;
         let generatedToken = null;
 
@@ -184,7 +185,7 @@ exports.createInvoice = async (req, res) => {
             if (existingQueueToday) {
                 activeQueueId = existingQueueToday._id;
                 generatedToken = existingQueueToday.tokenNumber;
-            } else {
+            } else if (bookAppointment === true) {
                 // Determine assigned doctor
                 let docIdToAssign = doctorId;
                 if (!docIdToAssign) {
@@ -478,3 +479,130 @@ exports.updateBillingSettings = async (req, res) => {
         return res.status(500).json({ success: false, message: "Failed to update settings: " + error.message });
     }
 };
+
+// --- 💰 SETTLE OUTSTANDING DUE ON AN INVOICE ---
+exports.settleInvoiceDue = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const { id } = req.params;
+        const { amount, paymentMode } = req.body;
+
+        const invoice = await PatientInvoice.findOne({ _id: id, clinicId });
+        if (!invoice) {
+            return res.status(404).json({ success: false, message: "Invoice not found." });
+        }
+
+        const settleAmount = Number(amount) || invoice.remainingDue;
+        const newPaid = invoice.paidAmount + settleAmount;
+        const newDue = Math.max(0, invoice.totalAmount - newPaid);
+
+        invoice.paidAmount = newPaid;
+        invoice.remainingDue = newDue;
+        invoice.paymentStatus = newDue === 0 ? 'Paid' : 'Partially Paid';
+        if (paymentMode) invoice.paymentMode = paymentMode;
+
+        await invoice.save();
+
+        const revenueStats = await getRevenueMetricsHelper(clinicId);
+
+        return res.status(200).json({
+            success: true,
+            message: `Successfully collected ₹${settleAmount}. Remaining due: ₹${newDue}.`,
+            invoice,
+            revenueStats
+        });
+    } catch (error) {
+        console.error("Settle Invoice Due Error:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 🎫 BOOK APPOINTMENT TOKEN FOR AN EXISTING INVOICE ---
+exports.bookAppointmentForInvoice = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        const { id } = req.params;
+        const { doctorId } = req.body;
+
+        const invoice = await PatientInvoice.findOne({ _id: id, clinicId });
+        if (!invoice) {
+            return res.status(404).json({ success: false, message: "Invoice not found." });
+        }
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        // Check if patient already has a queue entry today
+        const existingQueueToday = await Queue.findOne({
+            clinicId,
+            patientPhone: invoice.patientPhone,
+            createdAt: { $gte: startOfDay }
+        });
+
+        if (existingQueueToday) {
+            invoice.queueId = existingQueueToday._id;
+            await invoice.save();
+            return res.status(200).json({
+                success: true,
+                message: `Patient already has active token (${existingQueueToday.tokenNumber}) today!`,
+                tokenNumber: existingQueueToday.tokenNumber,
+                queueId: existingQueueToday._id,
+                invoice
+            });
+        }
+
+        let docIdToAssign = doctorId || invoice.doctorId;
+        if (!docIdToAssign) {
+            const firstDoc = await User.findOne({ clinicId, role: 'doctor', isActive: true });
+            if (firstDoc) docIdToAssign = firstDoc._id;
+        }
+
+        if (!docIdToAssign) {
+            return res.status(400).json({ success: false, message: "No active doctor found to assign appointment." });
+        }
+
+        const docUser = await User.findById(docIdToAssign).select('name specialization');
+
+        const todayCount = await Queue.countDocuments({
+            clinicId,
+            isApproved: true,
+            createdAt: { $gte: startOfDay }
+        });
+        const generatedToken = `T-${todayCount + 1}`;
+
+        const newQueueEntry = await Queue.create({
+            clinicId,
+            patientName: invoice.patientName,
+            patientPhone: invoice.patientPhone,
+            doctorId: docIdToAssign,
+            tokenNumber: generatedToken,
+            visitType: 'Walk-in',
+            isApproved: true,
+            status: 'Waiting'
+        });
+
+        invoice.queueId = newQueueEntry._id;
+        invoice.doctorId = docIdToAssign;
+        if (docUser) invoice.doctorName = docUser.name;
+        await invoice.save();
+
+        if (req.io) {
+            req.io.to(clinicId.toString()).emit('queueUpdate');
+            req.io.to(clinicId.toString()).emit('newCheckInRequest', {
+                message: `New token ${generatedToken} generated for ${invoice.patientName} via billing.`
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `Appointment Token ${generatedToken} booked successfully for ${docUser?.name || 'Doctor'}!`,
+            tokenNumber: generatedToken,
+            queueId: newQueueEntry._id,
+            invoice
+        });
+    } catch (error) {
+        console.error("Book appointment for invoice error:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+

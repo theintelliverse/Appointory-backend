@@ -391,7 +391,7 @@ exports.bookAppointment = async (req, res) => {
         // Get patient info — try by ID first, then fall back to phone
         let patient = null;
         if (patientId) {
-            try { patient = await Patient.findById(patientId); } catch (_) { }
+            try { patient = await Patient.findById(patientId); } catch (_) {}
         }
         if (!patient && patientPhone) {
             const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
@@ -444,7 +444,7 @@ exports.bookAppointment = async (req, res) => {
         const clinicWorkingDays = clinic.workingDays && clinic.workingDays.length > 0
             ? clinic.workingDays.map(d => d.toLowerCase())
             : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
+        
         if (!clinicWorkingDays.includes(apptWeekday)) {
             const formattedDay = apptWeekday.charAt(0).toUpperCase() + apptWeekday.slice(1);
             return res.status(400).json({
@@ -491,19 +491,40 @@ exports.bookAppointment = async (req, res) => {
             });
         }
 
+        // 4️⃣ Block appointments if doctor is LIVE on the walk-in queue for this date range
+        if (doctor.isAvailable === false) {
+            const apptDateOnly = new Date(parsedAppointmentDate); apptDateOnly.setHours(0, 0, 0, 0);
+            const serverTodayOnly = new Date(); serverTodayOnly.setHours(0, 0, 0, 0);
+            // Determine the end of the live period (liveUntilDate or today only)
+            const liveEndDate = doctor.liveUntilDate
+                ? new Date(doctor.liveUntilDate)
+                : new Date(serverTodayOnly);
+            liveEndDate.setHours(23, 59, 59, 999);
+
+            if (apptDateOnly >= serverTodayOnly && apptDateOnly <= liveEndDate) {
+                const untilStr = doctor.liveUntilDate
+                    ? `until ${new Date(doctor.liveUntilDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
+                    : 'today';
+                return res.status(400).json({
+                    success: false,
+                    message: `Dr. ${doctor.name} is on live walk-in queue ${untilStr} and is not accepting appointments during this period. Please book after that date.`
+                });
+            }
+        }
+
         if (rescheduleAppointmentId) {
             // Find existing queue entry (supports queueId or patient appointment subdocument ID)
             let queueEntry = null;
             try {
                 queueEntry = await Queue.findById(rescheduleAppointmentId);
-            } catch (_) { }
+            } catch (_) {}
 
             if (!queueEntry) {
                 const matchedInPatient = patient.appointments.find(app => app._id?.toString() === rescheduleAppointmentId || app.queueId?.toString() === rescheduleAppointmentId);
                 if (matchedInPatient?.queueId) {
                     try {
                         queueEntry = await Queue.findById(matchedInPatient.queueId);
-                    } catch (_) { }
+                    } catch (_) {}
                 }
             }
 
@@ -521,7 +542,7 @@ exports.bookAppointment = async (req, res) => {
             await queueEntry.save();
 
             // Find patient and update their appointment record
-            const appointmentIndex = patient.appointments.findIndex(app =>
+            const appointmentIndex = patient.appointments.findIndex(app => 
                 (queueEntry._id && app.queueId?.toString() === queueEntry._id.toString()) ||
                 app.queueId?.toString() === rescheduleAppointmentId ||
                 app._id?.toString() === rescheduleAppointmentId
