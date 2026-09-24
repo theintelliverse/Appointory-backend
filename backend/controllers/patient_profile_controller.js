@@ -76,20 +76,66 @@ exports.getPatientProfile = async (req, res) => {
             });
         }
 
-        // 🧩 MERGE DATA - Map MedicalRecord to medicalHistory format
-        const medicalHistory = (visitHistory || []).map(visit => {
-            const medicineData = visit.medicines || [];
+        // 🧩 MERGE DATA - Map MedicalRecord and Patient.medicalHistory with complete medicine details
+        const medicalRecordHistory = (visitHistory || []).map(visit => {
+            const medicineData = (visit.medicines || []).map(m => ({
+                name: m.name || '',
+                strength: m.strength || m.amount || '',
+                whenToTake: m.whenToTake || m.time || '',
+                time: m.whenToTake || m.time || '',
+                beforeAfter: m.beforeAfter || '',
+                duration: m.duration || '',
+                instructions: m.instructions || m.notes || ''
+            }));
             return {
                 visitId: visit._id,
                 date: visit.visitDate,
                 doctorName: visit.doctorId?.name || 'Unknown Doctor',
+                doctorSpecialization: visit.doctorId?.specialization || '',
                 clinicName: visit.clinicId?.name || 'Unknown Clinic',
-                diagnosis: visit.diagnosis || visit.notes?.split('\n')[0] || 'N/A',
+                clinicAddress: visit.clinicId?.address || '',
+                diagnosis: visit.diagnosis || visit.notes?.split('\n')[0] || 'Consultation Record',
                 symptoms: visit.notes || '',
+                notes: visit.notes || '',
                 prescription: visit.notes || '',
                 medicines: medicineData
             };
         });
+
+        // Also check if lockerProfiles have medicalHistory
+        const directPatientHistory = (lockerProfiles || []).flatMap(p => p.medicalHistory || []).map(h => ({
+            visitId: h.visitId || h._id,
+            date: h.date,
+            doctorName: h.doctorName || 'Consultant Specialist',
+            doctorSpecialization: '',
+            clinicName: h.clinicName || 'Clinic Facility',
+            clinicAddress: '',
+            diagnosis: h.diagnosis || 'Clinical Consultation',
+            symptoms: h.symptoms || '',
+            notes: h.symptoms || h.prescription || '',
+            prescription: h.prescription || '',
+            medicines: (h.medicines || []).map(m => ({
+                name: m.name || '',
+                strength: m.strength || m.amount || '',
+                whenToTake: m.whenToTake || m.time || '',
+                time: m.whenToTake || m.time || '',
+                beforeAfter: m.beforeAfter || '',
+                duration: m.duration || '',
+                instructions: m.instructions || m.notes || ''
+            }))
+        }));
+
+        // Merge and deduplicate by visitId or timestamp+doctor
+        const seenVisitKeys = new Set();
+        const medicalHistory = [];
+        for (const item of [...medicalRecordHistory, ...directPatientHistory]) {
+            const idKey = item.visitId ? item.visitId.toString() : `${new Date(item.date).getTime()}_${item.doctorName}`;
+            if (!seenVisitKeys.has(idKey)) {
+                seenVisitKeys.add(idKey);
+                medicalHistory.push(item);
+            }
+        }
+        medicalHistory.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
         // 🧩 Merge documents from all matching patient profiles and dedupe
         const mergedDocuments = (lockerProfiles || []).flatMap((p) => p.documents || []);
