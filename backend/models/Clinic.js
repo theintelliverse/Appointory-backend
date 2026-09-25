@@ -71,8 +71,8 @@ const clinicSchema = mongoose.Schema({
     youtube: { type: String, default: '' }
   },
   rating: {
-    score: { type: Number, default: 4.8 },
-    count: { type: Number, default: 15 }
+    score: { type: Number, default: 0 },
+    count: { type: Number, default: 0 }
   },
   accreditation: [{ type: String }],
   videoUrl: { type: String, default: '' }

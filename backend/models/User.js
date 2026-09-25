@@ -63,8 +63,8 @@ const userSchema = mongoose.Schema({
     youtube: { type: String, default: '' }
   },
   rating: {
-    score: { type: Number, default: 4.9 },
-    count: { type: Number, default: 22 }
+    score: { type: Number, default: 0 },
+    count: { type: Number, default: 0 }
   },
   videoUrl: { type: String, default: '' }
 }, { timestamps: true });

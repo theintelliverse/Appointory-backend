@@ -78,8 +78,8 @@ const independentLabSchema = mongoose.Schema({
         youtube: { type: String, default: '' }
     },
     rating: {
-        score: { type: Number, default: 4.9 },
-        count: { type: Number, default: 28 }
+        score: { type: Number, default: 0 },
+        count: { type: Number, default: 0 }
     },
     accreditation: [{ type: String }],
     videoUrl: { type: String, default: '' }

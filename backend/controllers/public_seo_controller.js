@@ -93,11 +93,13 @@ exports.getPublicClinicProfile = async (req, res) => {
                         "closes": clinic.closingTime || "17:00"
                     }
                 ],
-                "aggregateRating": {
-                    "@type": "AggregateRating",
-                    "ratingValue": clinic.rating?.score || 4.8,
-                    "reviewCount": clinic.rating?.count || 15
-                },
+                ...(clinic.rating?.count > 0 ? {
+                    "aggregateRating": {
+                        "@type": "AggregateRating",
+                        "ratingValue": clinic.rating.score,
+                        "reviewCount": clinic.rating.count
+                    }
+                } : {}),
                 "medicalSpecialty": clinic.specialties && clinic.specialties.length > 0 ? clinic.specialties : ["General Practice"],
                 "speakable": {
                     "@type": "SpeakableSpecification",
@@ -180,11 +182,13 @@ exports.getPublicDoctorProfile = async (req, res) => {
                 "url": `${baseUrl}/c/${clinic.slug || clinic._id}`,
                 "address": clinic.address
             } : undefined,
-            "aggregateRating": {
-                "@type": "AggregateRating",
-                "ratingValue": doctor.rating?.score || 4.9,
-                "reviewCount": doctor.rating?.count || 22
-            }
+            ...(doctor.rating?.count > 0 ? {
+                "aggregateRating": {
+                    "@type": "AggregateRating",
+                    "ratingValue": doctor.rating.score,
+                    "reviewCount": doctor.rating.count
+                }
+            } : {})
         };
 
         const jsonLd = [physicianSchema];
@@ -297,11 +301,13 @@ exports.getPublicLabProfile = async (req, res) => {
                 "code": t.code || undefined,
                 "description": `Sample: ${t.sampleType || 'Blood'}. Price: ₹${t.price || 0}. Turnaround: ${t.turnAroundHours || 24} hours.`
             })),
-            "aggregateRating": {
-                "@type": "AggregateRating",
-                "ratingValue": lab.rating?.score || 4.9,
-                "reviewCount": lab.rating?.count || 28
-            }
+            ...(lab.rating?.count > 0 ? {
+                "aggregateRating": {
+                    "@type": "AggregateRating",
+                    "ratingValue": lab.rating.score,
+                    "reviewCount": lab.rating.count
+                }
+            } : {})
         };
 
         res.status(200).json({
@@ -347,7 +353,7 @@ exports.generateSitemapXml = async (req, res) => {
         xml += `<urlset xmlns="http://www.sitemap.org/schemas/sitemap/0.9">\n`;
 
         // Static core routes
-        const staticRoutes = ['', 'login', 'register-clinic', 'patient/checkin', 'privacy', 'terms', 'contact', 'llms.txt', 'llms-full.txt', 'ai.txt'];
+        const staticRoutes = ['', 'login', 'register-clinic', 'patient/checkin', 'privacy', 'terms', 'cookie-policy', 'refund-policy', 'contact', 'llms.txt', 'llms-full.txt', 'ai.txt'];
         staticRoutes.forEach(route => {
             xml += `  <url>\n`;
             xml += `    <loc>${baseUrl}/${route}</loc>\n`;
