@@ -77,4 +77,5 @@ const requireService = (serviceName) => {
     };
 };
 
-module.exports = { requireService };
+requireService.requireService = requireService;
+module.exports = requireService;

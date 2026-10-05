@@ -22,29 +22,83 @@ const getTwilioClient = () => {
     }
 };
 
-// --- 🛠️ OPTIMIZED SMS SIMULATION (Twilio Rate Limit Protection) ---
-const sendTwilioAlert = async (phone, message) => {
+// --- 🔐 CHECK CLINIC MESSAGING SERVICE SUBSCRIPTION ---
+const checkClinicMessagingAccess = async (clinicId) => {
+    if (!clinicId) return true;
     try {
-        const client = getTwilioClient();
-        if (!client || !process.env.TWILIO_PHONE_NUMBER) {
-            console.warn("⚠️ Twilio not configured; skipping SMS alert.");
-            return;
+        const clinic = await Clinic.findById(clinicId);
+        if (!clinic) return false;
+        const now = new Date();
+        // 1. Full active subscription
+        if (clinic.subscriptionExpiresAt && new Date(clinic.subscriptionExpiresAt) > now) {
+            return true;
         }
+        // 2. Modular 'messaging' service active
+        if (clinic.activeServices && clinic.activeServices.length > 0) {
+            const svc = clinic.activeServices.find(s => s.service === 'messaging');
+            if (svc && svc.expiresAt && new Date(svc.expiresAt) > now) {
+                return true;
+            }
+        }
+        return false;
+    } catch (err) {
+        console.warn("⚠️ Failed to check clinic messaging access:", err.message);
+        return false;
+    }
+};
+
+// --- 🛠️ DUAL NOTIFICATION ENGINE (SMS + WhatsApp Alerts via Twilio Gateway) ---
+const sendTwilioAlert = async (phone, message, clinicId = null) => {
+    try {
+        if (clinicId) {
+            const hasAccess = await checkClinicMessagingAccess(clinicId);
+            if (!hasAccess) {
+                console.log(`🔒 [MESSAGING MODULE LOCKED] Clinic ${clinicId} has no active SMS & WhatsApp subscription. Skipping alert.`);
+                return { success: false, serviceLocked: true };
+            }
+        }
+
+        const client = getTwilioClient();
+        if (!client) {
+            console.warn("⚠️ Twilio not configured; skipping SMS & WhatsApp alerts.");
+            return { success: false, simulated: true };
+        }
+
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        if (!cleanPhone || cleanPhone.length !== 10) return { success: false, reason: 'Invalid phone' };
         const formattedPhone = `+91${cleanPhone}`;
 
-        await client.messages.create({
-            body: message,
-            from: process.env.TWILIO_PHONE_NUMBER,
-            to: formattedPhone
-        });
+        // 1. 📲 Standard SMS Alert Dispatch
+        if (process.env.TWILIO_PHONE_NUMBER) {
+            client.messages.create({
+                body: message,
+                from: process.env.TWILIO_PHONE_NUMBER,
+                to: formattedPhone
+            }).then(res => {
+                console.log(`✅ [SMS ALERT SENT] SID: ${res.sid} | To: ${formattedPhone}`);
+            }).catch(smsErr => {
+                console.warn(`⚠️ [SMS DELIVERY NOTE] To: ${formattedPhone} - ${smsErr.message}`);
+            });
+        }
 
-        /* --- CONSOLE LOGS COMMENTED OUT ---
-        console.log(`To: ${formattedPhone}`);
-        console.log(`Msg: ${message}`);
-        */
+        // 2. 💬 WhatsApp Alert Dispatch
+        const twilioWhatsApp = process.env.TWILIO_WHATSAPP_FROM || process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+        if (twilioWhatsApp) {
+            const fromWhatsApp = twilioWhatsApp.startsWith('whatsapp:') ? twilioWhatsApp : `whatsapp:${twilioWhatsApp}`;
+            client.messages.create({
+                body: message,
+                from: fromWhatsApp,
+                to: `whatsapp:${formattedPhone}`
+            }).then(res => {
+                console.log(`✅ [WHATSAPP ALERT SENT] SID: ${res.sid} | To: whatsapp:${formattedPhone}`);
+            }).catch(waErr => {
+                console.warn(`⚠️ [WHATSAPP DELIVERY NOTE] To: whatsapp:${formattedPhone} - ${waErr.message}`);
+            });
+        }
+        return { success: true };
     } catch (error) {
-        console.error("❌ Twilio Delivery Error:", error.message);
+        console.error("❌ Notification Delivery Error:", error.message);
+        return { success: false, error: error.message };
     }
 };
 
@@ -58,7 +112,7 @@ const getFrontendUrl = () => {
 // 1️⃣ Add Patient to Queue (Manual - SMS Triggered)
 exports.addToQueue = async (req, res) => {
     try {
-        const { patientName, patientPhone, doctorId, visitType, isEmergency } = req.body;
+        const { patientName, patientPhone, doctorId, visitType, isEmergency, patientId } = req.body;
         const clinicId = req.user.clinicId;
 
         const { getFacilityLimits, checkAndLinkPatient } = require('../utils/auth_middleware');
@@ -83,26 +137,85 @@ exports.addToQueue = async (req, res) => {
             }
         }
 
+        let resolvedPatientId = patientId;
+        if (!resolvedPatientId && patientPhone && patientName) {
+            const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+            const Patient = require('../models/Patient');
+            const foundPatient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp(`^${patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                mergedInto: null
+            });
+            if (foundPatient) {
+                resolvedPatientId = foundPatient._id;
+            }
+        }
+
         const today = new Date().setHours(0, 0, 0, 0);
         const count = await Queue.countDocuments({ clinicId, isApproved: true, createdAt: { $gte: today } });
         const tokenNumber = isEmergency ? `E-${count + 1}` : `T-${count + 1}`;
 
         const newEntry = await Queue.create({
-            clinicId, patientName, patientPhone, doctorId, tokenNumber, visitType, isEmergency, isApproved: true, status: 'Waiting'
+            clinicId,
+            patientName,
+            patientPhone,
+            doctorId,
+            tokenNumber,
+            visitType,
+            isEmergency,
+            isApproved: true,
+            status: 'Waiting',
+            patientId: resolvedPatientId || undefined
         });
+
+        // 🔗 If resolvedPatientId exists, append visit/appointment reference to patient digital locker
+        if (resolvedPatientId) {
+            try {
+                const Patient = require('../models/Patient');
+                const patientDoc = await Patient.findById(resolvedPatientId);
+                if (patientDoc) {
+                    patientDoc.appointments = patientDoc.appointments || [];
+                    patientDoc.appointments.push({
+                        queueId: newEntry._id,
+                        clinicId,
+                        doctorId,
+                        appointmentDate: new Date(),
+                        status: 'Scheduled'
+                    });
+                    patientDoc.lastVisit = new Date();
+                    await patientDoc.save();
+                }
+            } catch (linkErr) {
+                console.warn('⚠️ Could not link queue entry to patient record:', linkErr.message);
+            }
+        }
 
         // 📱 Send SMS with live tracking link
         const trackingUrl = `${getFrontendUrl()}/patient/status?id=${newEntry._id}`;
         const smsMsg = `✅ Token: ${tokenNumber} | Track your live queue status here: ${trackingUrl} - Appointory`;
         if (patientPhone) {
-            sendTwilioAlert(patientPhone, smsMsg).catch(() => { });
+            sendTwilioAlert(patientPhone, smsMsg, clinicId).catch(() => { });
+        }
+
+        // 🎯 Milestone Check: Detect if this is the clinic's very first managed appointment
+        let isFirstAppointment = false;
+        try {
+            const clinicDoc = await Clinic.findById(clinicId);
+            if (clinicDoc && !clinicDoc.milestones?.firstAppointmentAt) {
+                isFirstAppointment = true;
+                clinicDoc.milestones = clinicDoc.milestones || {};
+                clinicDoc.milestones.firstAppointmentAt = new Date();
+                await clinicDoc.save();
+            }
+        } catch (mErr) {
+            console.warn('Milestone check error:', mErr.message);
         }
 
         // 📢 DEBUG LOG
         console.log(`📢 Emit: queueUpdate to Room: ${clinicId}`);
         if (req.io) req.io.to(clinicId.toString()).emit('queueUpdate');
 
-        res.status(201).json({ success: true, data: newEntry });
+        res.status(201).json({ success: true, data: newEntry, isFirstAppointment });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 };
 
@@ -120,6 +233,20 @@ exports.selfCheckIn = async (req, res) => {
             return res.status(400).json({ success: false, message: limitErr.message });
         }
 
+        let resolvedPatientId = undefined;
+        if (patientPhone && patientName) {
+            const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+            const Patient = require('../models/Patient');
+            const foundPatient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp(`^${patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                mergedInto: null
+            });
+            if (foundPatient) {
+                resolvedPatientId = foundPatient._id;
+            }
+        }
+
         const newRequest = await Queue.create({
             clinicId: clinic._id,
             patientName,
@@ -127,7 +254,8 @@ exports.selfCheckIn = async (req, res) => {
             doctorId,
             visitType: 'Walk-in',
             status: 'Pending-Approval',
-            isApproved: false
+            isApproved: false,
+            patientId: resolvedPatientId
         });
 
         // 📢 DEBUG LOG: Emit so Admin Dashboard instantly sees the new walk-in request
@@ -188,11 +316,24 @@ exports.approvePatient = async (req, res) => {
         }
 
         const pendingEntry = await Queue.findById(id);
+        let resolvedPatientId = pendingEntry?.patientId;
         if (pendingEntry) {
             try {
                 await checkAndLinkPatient(pendingEntry.patientPhone, clinicId);
             } catch (limitErr) {
                 return res.status(400).json({ success: false, message: limitErr.message });
+            }
+            if (!resolvedPatientId && pendingEntry.patientPhone && pendingEntry.patientName) {
+                const cleanPhone = pendingEntry.patientPhone.replace(/\D/g, '').slice(-10);
+                const Patient = require('../models/Patient');
+                const foundPatient = await Patient.findOne({
+                    phone: new RegExp(cleanPhone + '$'),
+                    name: new RegExp(`^${pendingEntry.patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                    mergedInto: null
+                });
+                if (foundPatient) {
+                    resolvedPatientId = foundPatient._id;
+                }
             }
         }
 
@@ -200,7 +341,8 @@ exports.approvePatient = async (req, res) => {
         const tokenNumber = isEmergency ? `E-${count + 1}` : `P-${count + 1}`;
 
         const entry = await Queue.findByIdAndUpdate(id, {
-            isApproved: true, status: 'Waiting', tokenNumber, isEmergency: !!isEmergency
+            isApproved: true, status: 'Waiting', tokenNumber, isEmergency: !!isEmergency,
+            ...(resolvedPatientId ? { patientId: resolvedPatientId } : {})
         }, { new: true }).populate('clinicId', 'name');
 
         // 📱 Send SMS with live tracking link
@@ -208,7 +350,7 @@ exports.approvePatient = async (req, res) => {
         const simpleMessage = `✅ Confirmed! Token: ${tokenNumber} | Clinic: ${entry.clinicId.name} | Track live: ${trackingUrl} - Appointory`;
 
         if (entry.patientPhone) {
-            sendTwilioAlert(entry.patientPhone, simpleMessage).catch(err => {
+            sendTwilioAlert(entry.patientPhone, simpleMessage, clinicId).catch(err => {
                 console.error("❌ SMS Error:", err.message);
             });
         }
@@ -295,6 +437,7 @@ exports.referToLab = async (req, res) => {
                 await ExternalLabRequest.create({
                     labId,
                     clinicId: entry.clinicId,
+                    patientId: entry.patientId || null,
                     patientName: entry.patientName,
                     patientPhone: entry.patientPhone,
                     testName,
@@ -308,7 +451,7 @@ exports.referToLab = async (req, res) => {
                 const smsMsg = `✅ Token: ${entry.tokenNumber || 'T-1'} | referred for "${testName}" at ${lab.labName}.\n📍 Address: ${lab.address}\n📞 Phone: ${lab.phone}\n⏰ Timings: ${timingStr}\nTrack your live queue status here: ${trackingUrl} - Appointory`;
                 
                 if (entry.patientPhone) {
-                    sendTwilioAlert(entry.patientPhone, smsMsg).catch(() => {});
+                    sendTwilioAlert(entry.patientPhone, smsMsg, entry.clinicId).catch(() => {});
                 }
                 
                 if (req.io) {
@@ -346,11 +489,29 @@ exports.completeVisit = async (req, res) => {
         const queueEntry = await Queue.findById(id).populate('doctorId');
         if (!queueEntry) return res.status(404).json({ message: "Session expired." });
 
-        const patient = await Patient.findOne({ phone: queueEntry.patientPhone });
+        // Resolve exact patient (primary account or specific family member)
+        let patient = null;
+        if (queueEntry.patientId) {
+            try { patient = await Patient.findById(queueEntry.patientId); } catch (_) {}
+        }
+        if (!patient && queueEntry.patientPhone && queueEntry.patientName) {
+            const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
+            const escapedName = queueEntry.patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i'),
+                mergedInto: null
+            });
+        }
+        if (!patient && queueEntry.patientPhone) {
+            const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
+
         if (patient) {
             patient.medicalHistory.push({
                 visitId: queueEntry._id,
-                doctorName: queueEntry.doctorId.name,
+                doctorName: queueEntry.doctorId?.name || req.user?.name || "Doctor",
                 clinicName: req.user.clinicName || "Our Clinic",
                 diagnosis: diagnosis || notes,
                 date: Date.now(),
@@ -363,12 +524,13 @@ exports.completeVisit = async (req, res) => {
 
         const duration = queueEntry.startTime ? Math.round((Date.now() - queueEntry.startTime) / 60000) : 0;
 
-        // Create medical record with diagnosis and medicines
+        // Create medical record with diagnosis, medicines and exact patientId
         await MedicalRecord.create({
             clinicId: queueEntry.clinicId,
             doctorId: queueEntry.doctorId._id,
             patientName: queueEntry.patientName,
             patientPhone: queueEntry.patientPhone,
+            patientId: queueEntry.patientId || patient?._id || null,
             notes: notes,
             diagnosis: diagnosis,
             medicines: medicines || [],
@@ -965,10 +1127,25 @@ exports.updateVitals = async (req, res) => {
             });
         }
 
-        const { patientPhone } = queueEntry;
+        // Resolve exact target patient (primary or family member)
+        let patient = null;
+        if (queueEntry.patientId) {
+            try { patient = await Patient.findById(queueEntry.patientId); } catch (_) {}
+        }
+        if (!patient && queueEntry.patientPhone && queueEntry.patientName) {
+            const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
+            const escapedName = queueEntry.patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i'),
+                mergedInto: null
+            });
+        }
+        if (!patient && queueEntry.patientPhone) {
+            const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
 
-        // Find patient by phone
-        const patient = await Patient.findOne({ phone: patientPhone });
         if (!patient) {
             return res.status(404).json({
                 success: false,
@@ -1212,17 +1389,19 @@ exports.getDoctorDashboardStats = async (req, res) => {
 // --- 🔒 DOCTOR'S PRIVATE NOTES ---
 exports.savePrivateNote = async (req, res) => {
     try {
-        const { patientPhone, note } = req.body;
+        const { patientPhone, note, patientId, patientName } = req.body;
         const doctorId = req.user.id || req.user._id;
 
-        if (!patientPhone) {
-            return res.status(400).json({ success: false, message: "Patient phone is required" });
+        if (!patientPhone && !patientId) {
+            return res.status(400).json({ success: false, message: "Patient phone or ID is required" });
         }
 
-        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+        const cleanPhone = patientPhone ? patientPhone.replace(/\D/g, '').slice(-10) : '';
 
         const newNote = await PrivateNote.create({
             patientPhone: cleanPhone,
+            patientId: patientId || null,
+            patientName: patientName || '',
             doctorId,
             note: note || ""
         });
@@ -1240,18 +1419,32 @@ exports.savePrivateNote = async (req, res) => {
 exports.getPrivateNotes = async (req, res) => {
     try {
         const { phone } = req.params;
+        const { patientId, patientName } = req.query;
         const doctorId = req.user.id || req.user._id;
 
-        if (!phone) {
-            return res.status(400).json({ success: false, message: "Patient phone is required" });
+        if (!phone && !patientId) {
+            return res.status(400).json({ success: false, message: "Patient phone or ID is required" });
         }
 
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '';
 
-        const notes = await PrivateNote.find({
-            patientPhone: cleanPhone,
-            doctorId
-        }).sort({ createdAt: -1 });
+        // Query scoped strictly to the specific active family member
+        let query = { doctorId };
+        if (patientId) {
+            query.patientId = patientId;
+        } else if (cleanPhone && patientName) {
+            const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            query.patientPhone = cleanPhone;
+            query.$or = [
+                { patientName: new RegExp('^' + escapedName + '$', 'i') },
+                { patientName: { $exists: false } },
+                { patientName: '' }
+            ];
+        } else if (cleanPhone) {
+            query.patientPhone = cleanPhone;
+        }
+
+        const notes = await PrivateNote.find(query).sort({ createdAt: -1 });
 
         res.status(200).json({
             success: true,
@@ -1259,6 +1452,44 @@ exports.getPrivateNotes = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// 📲 Manually dispatch / resend SMS & WhatsApp Alert from Staff Dashboard (Protected by messaging paid module)
+exports.sendQueueAlert = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const entry = await Queue.findById(id).populate('clinicId', 'name').populate('doctorId', 'name');
+        if (!entry) {
+            return res.status(404).json({ success: false, message: 'Queue record not found.' });
+        }
+        if (!entry.patientPhone) {
+            return res.status(400).json({ success: false, message: 'Patient phone number is missing.' });
+        }
+
+        const clinicId = entry.clinicId?._id || req.user.clinicId;
+        const trackingUrl = `${getFrontendUrl()}/patient/status?id=${entry._id}`;
+        const clinicName = entry.clinicId?.name || 'Clinic';
+        const docName = entry.doctorId?.name ? `with Dr. ${entry.doctorId.name}` : '';
+        const msg = `💬 SMS & WhatsApp Alert: Namaste ${entry.patientName || 'Patient'}, your Token is ${entry.tokenNumber || 'Registered'} ${docName} at ${clinicName}. Status: ${entry.status}. Track live wait times here: ${trackingUrl} - Appointory`;
+
+        const alertRes = await sendTwilioAlert(entry.patientPhone, msg, clinicId);
+
+        if (alertRes && alertRes.serviceLocked) {
+            return res.status(403).json({
+                success: false,
+                serviceLocked: true,
+                serviceName: 'messaging',
+                message: "The 'messaging' service module is not active in your clinic subscription. Please upgrade your subscription to enable the SMS & WhatsApp Gateway."
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `SMS & WhatsApp alert dispatched to ${entry.patientPhone} successfully.`
+        });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
     }
 };
 

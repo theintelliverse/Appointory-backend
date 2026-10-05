@@ -3,13 +3,14 @@ const bcrypt = require('bcryptjs');
 
 const generateToken = (user) => {
     // 🔑 Flexible Payload: Use _id (staff) OR id (patient)
-    // Also include phone if it exists (for patients)
+    // Also include phone and tokenVersion (for immediate session revocation on password reset)
     return jwt.sign(
         { 
             id: user._id || user.id, 
             role: user.role, 
             clinicId: user.clinicId || null,
-            phone: user.phone || null
+            phone: user.phone || null,
+            tokenVersion: user.tokenVersion || 0
         }, 
         process.env.JWT_SECRET, 
         { expiresIn: '24h' }
@@ -17,7 +18,7 @@ const generateToken = (user) => {
 };
 
 const hashPassword = async (password) => {
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(12);
     return await bcrypt.hash(password, salt);
 };
 

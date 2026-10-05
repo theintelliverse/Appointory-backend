@@ -18,6 +18,11 @@ const externalLabRequestSchema = mongoose.Schema({
     // Patient info (duplicated here so lab can read it without clinic data access)
     patientName: { type: String, required: true, trim: true },
     patientPhone: { type: String, required: true, trim: true },
+    patientId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Patient',
+        default: null
+    },
     testName: { type: String, required: true, trim: true },
     notes: { type: String, default: '', trim: true },
 

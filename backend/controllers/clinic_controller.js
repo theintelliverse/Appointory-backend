@@ -54,6 +54,10 @@ exports.updateClinicSettings = async (req, res) => {
             slotDurationMinutes,
             workingDays,
             feeConsult,
+            feeFollowupConsult,
+            taxEnabled,
+            taxRate,
+            gstin,
             feeLab,
             feeEmergency,
             feeMedicine,
@@ -119,6 +123,10 @@ exports.updateClinicSettings = async (req, res) => {
                 slotDurationMinutes,
                 workingDays,
                 ...(feeConsult !== undefined && { feeConsult }),
+                ...(feeFollowupConsult !== undefined && { feeFollowupConsult }),
+                ...(taxEnabled !== undefined && { taxEnabled }),
+                ...(taxRate !== undefined && { taxRate }),
+                ...(gstin !== undefined && { gstin: String(gstin).trim().toUpperCase() }),
                 ...(feeLab !== undefined && { feeLab }),
                 ...(feeEmergency !== undefined && { feeEmergency }),
                 ...(feeMedicine !== undefined && { feeMedicine }),
@@ -386,7 +394,41 @@ exports.getBookedSlots = async (req, res) => {
             });
         });
 
-        console.log(`✅ Found ${bookedSlots.length} booked slots`);
+        // Query active SlotHold records (10-minute temporary holds)
+        const SlotHold = require('../models/SlotHold');
+        const activeHolds = await SlotHold.find({
+            clinicId,
+            doctorId
+        });
+
+        activeHolds.forEach(hold => {
+            const datePart = hold.slotDate ? hold.slotDate.toISOString().split('T')[0] : '';
+            if (datePart && hold.slotTime) {
+                const timeClean = hold.slotTime.length === 5 ? hold.slotTime + ':00' : hold.slotTime;
+                const slotDateTime = new Date(`${datePart}T${timeClean}`);
+                if (!isNaN(slotDateTime.getTime())) {
+                    if (startDate && endDate) {
+                        const start = new Date(startDate);
+                        const end = new Date(endDate);
+                        if (slotDateTime >= start && slotDateTime <= end) {
+                            bookedSlots.push({
+                                appointmentDate: slotDateTime,
+                                timeSlot: slotDateTime.toISOString().slice(0, 16),
+                                isHeld: true
+                            });
+                        }
+                    } else {
+                        bookedSlots.push({
+                            appointmentDate: slotDateTime,
+                            timeSlot: slotDateTime.toISOString().slice(0, 16),
+                            isHeld: true
+                        });
+                    }
+                }
+            }
+        });
+
+        console.log(`✅ Found ${bookedSlots.length} booked and held slots`);
 
         res.status(200).json({
             success: true,

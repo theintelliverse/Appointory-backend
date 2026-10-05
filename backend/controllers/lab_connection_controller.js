@@ -215,9 +215,27 @@ exports.sendTestRequest = async (req, res) => {
             return res.status(403).json({ success: false, message: 'You are not connected to this lab. Connect first.' });
         }
 
+        let targetPatientId = req.body.patientId || null;
+        if (!targetPatientId && queueId) {
+            const Queue = require('../models/Queue');
+            const q = await Queue.findById(queueId);
+            if (q?.patientId) targetPatientId = q.patientId;
+        }
+        if (!targetPatientId && patientPhone && patientName) {
+            const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+            const Patient = require('../models/Patient');
+            const p = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp(`^${patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                mergedInto: null
+            });
+            if (p) targetPatientId = p._id;
+        }
+
         const request = await ExternalLabRequest.create({
             labId,
             clinicId,
+            patientId: targetPatientId,
             patientName,
             patientPhone,
             testName,
@@ -378,15 +396,40 @@ exports.uploadReportForRequest = [
             // Synchronize reports to patient profile and update clinic queue stage
             try {
                 const Patient = require('../models/Patient');
+                const Queue = require('../models/Queue');
+
+                let targetPatient = null;
+                if (request.patientId) {
+                    try { targetPatient = await Patient.findById(request.patientId); } catch (_) {}
+                }
+                if (!targetPatient && request.queueId) {
+                    const queueDoc = await Queue.findById(request.queueId);
+                    if (queueDoc?.patientId) {
+                        try { targetPatient = await Patient.findById(queueDoc.patientId); } catch (_) {}
+                    }
+                }
+
                 const cleanPhone = request.patientPhone.replace(/\D/g, '').slice(-10);
-                let patients = await Patient.find({ phone: new RegExp(cleanPhone + '$') });
-                
-                if (!patients || patients.length === 0) {
-                    patients = [new Patient({
+                if (!targetPatient && cleanPhone && request.patientName) {
+                    const escapedName = request.patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    targetPatient = await Patient.findOne({
+                        phone: new RegExp(cleanPhone + '$'),
+                        name: new RegExp('^' + escapedName + '$', 'i'),
+                        mergedInto: null
+                    });
+                }
+                if (!targetPatient && cleanPhone) {
+                    targetPatient = await Patient.findOne({
+                        phone: new RegExp(cleanPhone + '$'),
+                        mergedInto: null
+                    });
+                }
+                if (!targetPatient) {
+                    targetPatient = new Patient({
                         name: request.patientName,
                         phone: cleanPhone,
                         documents: []
-                    })];
+                    });
                 }
                 
                 const newDocuments = newReports.map(rep => ({
@@ -398,10 +441,8 @@ exports.uploadReportForRequest = [
                     uploadedAt: rep.uploadedAt
                 }));
                 
-                for (const patient of patients) {
-                    patient.documents.push(...newDocuments);
-                }
-                await Promise.all(patients.map(p => p.save()));
+                targetPatient.documents.push(...newDocuments);
+                await targetPatient.save();
 
                 if (request.queueId) {
                     const Queue = require('../models/Queue');
@@ -448,9 +489,22 @@ exports.createLabTestRequest = async (req, res) => {
             return res.status(403).json({ success: false, message: 'You are not connected to this clinic.' });
         }
 
+        let targetPatientId = req.body.patientId || null;
+        if (!targetPatientId && patientPhone && patientName) {
+            const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+            const Patient = require('../models/Patient');
+            const p = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp(`^${patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                mergedInto: null
+            });
+            if (p) targetPatientId = p._id;
+        }
+
         const request = await ExternalLabRequest.create({
             labId,
             clinicId,
+            patientId: targetPatientId,
             patientName,
             patientPhone,
             testName,

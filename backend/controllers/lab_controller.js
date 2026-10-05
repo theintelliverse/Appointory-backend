@@ -297,35 +297,40 @@ exports.uploadLabReport = async (req, res) => {
         }
         console.log("✅ [3] Queue Entry Found:", queueEntry.patientName);
 
-        // 🔍 DEBUG: Check Patient(s)
+        // 🔍 Resolve SPECIFIC target patient for this queue entry
+        let targetPatient = null;
+        if (queueEntry.patientId) {
+            try { targetPatient = await Patient.findById(queueEntry.patientId); } catch (_) {}
+        }
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
-        let patients = await Patient.find({ phone: new RegExp(cleanPhone + '$') });
-
-        // Fallback for inconsistent phone formats in DB
-        if (!patients || patients.length === 0) {
-            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
-                .select('name phone documents');
-            patients = allProfiles.filter((profile) => {
-                const normalized = String(profile.phone || '').replace(/\D/g, '').slice(-10);
-                return normalized === cleanPhone;
+        if (!targetPatient && cleanPhone && queueEntry.patientName) {
+            const escapedName = queueEntry.patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            targetPatient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i'),
+                mergedInto: null
             });
         }
-
-        if (!patients || patients.length === 0) {
+        if (!targetPatient && cleanPhone) {
+            targetPatient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                mergedInto: null
+            });
+        }
+        if (!targetPatient) {
             console.log("👤 [4] Patient not found, creating new profile...");
-            patients = [new Patient({
+            targetPatient = new Patient({
                 name: queueEntry.patientName,
                 phone: cleanPhone,
                 documents: []
-            })];
+            });
         }
 
-        // 🗄️ Update Patient Documents for all matched profiles for each uploaded file
+        // 🗄️ Update Patient Documents strictly for this specific patient
         const newDocuments = files.map((file, idx) => {
             const cloudinarySecureUrl = file.secure_url || file.path || file.url;
             console.log(`🔗 File [${idx + 1}] Cloudinary URL:`, cloudinarySecureUrl);
 
-            // Extract a realistic title if multiple reports are uploaded (e.g. CBC Report, Lipid Report, etc.)
             let fileTitle = req.body.title || "Diagnostic Report";
             if (files.length > 1) {
                 const originalName = file.originalname ? file.originalname.split('.')[0] : `Report-${idx + 1}`;
@@ -342,13 +347,9 @@ exports.uploadLabReport = async (req, res) => {
             };
         });
 
-        for (const patient of patients) {
-            patient.documents.push(...newDocuments);
-        }
-
-        console.log(`💾 [5] Attempting to save ${patients.length} patient profile(s)...`);
-        await Promise.all(patients.map((patient) => patient.save()));
-        console.log("✅ [5] Patient profile(s) saved successfully.");
+        targetPatient.documents.push(...newDocuments);
+        await targetPatient.save();
+        console.log(`✅ [5] Diagnostic report saved to patient profile: ${targetPatient.name} (${targetPatient._id})`);
 
         // 🏷️ Update Queue Stage
         queueEntry.currentStage = 'Lab-Completed';

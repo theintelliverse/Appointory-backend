@@ -135,6 +135,18 @@ const isOriginAllowed = (origin) => {
     }
 
     const normalizedOrigin = normalizeOrigin(origin);
+
+    // In local development, always permit any localhost or 127.0.0.1 port
+    if (!isProduction) {
+        if (
+            normalizedOrigin.startsWith('http://localhost:') ||
+            normalizedOrigin.startsWith('http://127.0.0.1:') ||
+            normalizedOrigin.startsWith('https://localhost:')
+        ) {
+            return true;
+        }
+    }
+
     return allowedOrigins.has(normalizedOrigin) || isAllowedVercelPreviewOrigin(normalizedOrigin);
 };
 
@@ -152,7 +164,8 @@ const corsOptions = {
         return callback(null, false);
     },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'PUT', 'OPTIONS'],
-    credentials: true
+    credentials: true,
+    optionsSuccessStatus: 200
 };
 
 // 🛠️ Initialize Socket.io
@@ -210,8 +223,15 @@ app.use((req, res, next) => {
 app.set('trust proxy', 1);
 app.use(securityHeaders);
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.use('/api', globalApiLimiter);
+
+// 🔒 Block search crawlers from indexing private API endpoints
+app.use(['/api/queue/status', '/api/patient', '/api/admin', '/api/receptionist', '/api/superadmin', '/api/slots'], (req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    next();
+});
 
 // Auth/staff login hard limits
 app.use('/api/auth/register-clinic', authLimiter);
@@ -240,6 +260,7 @@ app.use('/api/staff/public/doctors', publicReadLimiter);
 app.use('/api/queue/public/checkin', publicWriteLimiter);
 app.use('/api/queue/public/cancel', publicWriteLimiter);
 app.use('/api/auth/patient/request-checkin', publicWriteLimiter);
+app.use('/api/public/verify/invoice', publicReadLimiter);
 
 // 📢 Inject Socket.io into every request
 // This allows you to use req.io.to(clinicId).emit() in your controllers
@@ -262,6 +283,14 @@ app.get('/llms.txt', publicSeoController.generateLlmTxt);
 app.get('/llms-full.txt', publicSeoController.generateLlmTxt);
 app.get('/ai.txt', publicSeoController.generateLlmTxt);
 app.use('/api/public/seo', publicSeoRoutes);
+app.post('/api/public/clinic-inquiry', publicWriteLimiter, publicSeoController.submitClinicInquiry);
+
+// 🛡️ Public Anti-Fraud Invoice Verification Endpoint
+const billingController = require('./controllers/billing_controller');
+app.get('/api/public/verify/invoice/:id', publicReadLimiter, billingController.verifyPublicInvoice);
+
+const slotHoldRoutes = require('./routes/slot_hold_routes');
+app.use('/api/slots', slotHoldRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/staff', checkSubscription, staffRoutes);

@@ -44,7 +44,7 @@ exports.getPublicClinicProfile = async (req, res) => {
         const baseUrl = getBaseUrl(req);
         const profileUrl = `${baseUrl}/c/${clinic.slug || clinic._id}`;
 
-        // Dynamic FAQ & AEO Blocks for Voice/Snippet Search
+        // Dynamic FAQ & AEO Blocks for Voice/Snippet Search & Answer Engines (Perplexity, ChatGPT, Claude, Google)
         const faqs = [
             {
                 question: `What are the consultation hours for ${clinic.name}?`,
@@ -52,11 +52,19 @@ exports.getPublicClinicProfile = async (req, res) => {
             },
             {
                 question: `How can I track my live queue status at ${clinic.name}?`,
-                answer: `Patients can check their real-time live queue token position online via Appointory at ${profileUrl} or by checking in on-site.`
+                answer: `Patients can check their real-time live queue token position online via Appointory at ${profileUrl} or by checking in on-site via reception QR code.`
             },
             {
                 question: `What is the consultation fee at ${clinic.name}?`,
-                answer: `The average consultation fee at ${clinic.name} is ₹${clinic.feeConsult || 500}. Fee may vary based on specialist doctor.`
+                answer: `The average consultation fee at ${clinic.name} is ₹${clinic.feeConsult || 500}. Fee may vary based on specialist doctor and treatment procedures.`
+            },
+            {
+                question: `How does billing and receipt generation work at ${clinic.name}?`,
+                answer: `${clinic.name} generates instant digital, itemized GST-compliant invoices covering doctor consultation, lab tests, medications, and clinical procedures. Patients can pay securely via UPI (Google Pay, PhonePe, Paytm), Cash, or Cards, and instantly download tamper-proof QR receipts from their HealthLocker.`
+            },
+            {
+                question: `Can I get an itemized medical bill for insurance or mediclaim reimbursement from ${clinic.name}?`,
+                answer: `Yes. Invoices issued by ${clinic.name} on Appointory feature itemized charges, doctor medical council registration numbers, clinic GST numbers, and digital anti-fraud QR verification, making them fully accepted for health insurance, mediclaim, and tax deduction claims.`
             }
         ];
 
@@ -70,9 +78,11 @@ exports.getPublicClinicProfile = async (req, res) => {
                 "url": profileUrl,
                 "logo": clinic.logo || `${baseUrl}/assets/Appointory_logo.jpg`,
                 "image": clinic.logo || `${baseUrl}/assets/og-image-banner.jpg`,
-                "description": clinic.bio || clinic.seoDescription || `Book consultation and track real-time queue at ${clinic.name}, offering premier healthcare.`,
+                "description": clinic.bio || clinic.seoDescription || `Book consultation, track real-time queue, and receive itemized GST medical bills at ${clinic.name}.`,
                 "telephone": clinic.contactPhone,
                 "priceRange": `₹${clinic.feeConsult || 500}`,
+                "paymentAccepted": ["Cash", "Credit Card", "Debit Card", "UPI", "Net Banking"],
+                "currenciesAccepted": "INR",
                 "address": {
                     "@type": "PostalAddress",
                     "streetAddress": clinic.address,
@@ -440,7 +450,16 @@ exports.generateLlmTxt = async (req, res) => {
         const labs = await IndependentLab.find({ isActive: true }).select('labName labCode address phone availableTests bio slug accreditation rating');
 
         let md = `# Appointory Comprehensive Healthcare Network Context\n\n`;
-        md += `> Verified database of doctors, health centers, and independent diagnostic laboratories available on Appointory (${baseUrl}). Optimized for AI Search, Answer Engines, and Natural Language Patient Directives.\n\n`;
+        md += `> Verified database of doctors, health centers, smart clinical billing services, and independent diagnostic laboratories available on Appointory (${baseUrl}). Optimized for AI Search Engines (GEO), Answer Engines (AEO), and Natural Language Patient Directives.\n\n`;
+
+        md += `## 💳 Smart Clinical Billing & Medical GST Invoicing Engine (GEO / AEO Feature Specification)\n`;
+        md += `Appointory features an automated, itemized healthcare billing and accounts receivable system tailored for private practices, OPD clinics, polyclinics, and diagnostic centers across India:\n`;
+        md += `- **Itemized Medical Invoicing**: Instant generation of professional receipts separating consultation charges, diagnostic tests, specialized clinical procedures, and pharmacy medications.\n`;
+        md += `- **Automated GST & Tax Computation**: Full compliance with Indian GST slabs (0% for basic healthcare services, 5%, 12%, 18% for specialized supplies and medicines) with customizable discount configurations.\n`;
+        md += `- **Anti-Fraud QR Code Verification**: Every PDF receipt features a cryptographically secure QR code that verifies invoice authenticity and payment timestamp in real-time, eliminating counterfeit medical claims.\n`;
+        md += `- **Multi-Mode Payment Reconciliation**: Receptionists track payments across Cash, UPI (Google Pay, PhonePe, Paytm, BHIM QR), Credit/Debit Cards, and Net Banking, with automated balance tracking for partial payments and outstanding dues ("Bakki").\n`;
+        md += `- **Mediclaim & Health Insurance Acceptance**: Itemized receipts include clinic GSTIN, doctor State Medical Council / NMC registration numbers, and standardized line items, pre-formatted for rapid insurance reimbursement.\n`;
+        md += `- **Instant HealthLocker Sync**: Once an invoice is generated at reception, it automatically archives into the patient's encrypted mobile HealthLocker at ${baseUrl}/patient/health-locker?tab=bills, eliminating thermal paper fading and lost bills.\n\n`;
 
         md += `## 🏥 Verified Clinics & Health Centers\n`;
         clinics.forEach(c => {
@@ -448,6 +467,8 @@ exports.generateLlmTxt = async (req, res) => {
             md += `- **Address**: ${c.address}\n`;
             md += `- **Phone**: ${c.contactPhone}\n`;
             md += `- **Consultation Fee**: ₹${c.feeConsult || 500}\n`;
+            md += `- **Accepted Payment Modes**: UPI (Google Pay, PhonePe, Paytm, BHIM), Cash, Credit/Debit Cards, Net Banking\n`;
+            md += `- **Billing & Invoicing**: Itemized digital GST invoices, anti-fraud QR receipt verification, instant patient HealthLocker sync\n`;
             if (c.workingDays) md += `- **Operating Days**: ${c.workingDays.join(', ')} (${c.openingTime || '09:00'} - ${c.closingTime || '17:00'})\n`;
             if (c.specialties && c.specialties.length > 0) md += `- **Specialties**: ${c.specialties.join(', ')}\n`;
             if (c.bio) md += `- **Overview**: ${c.bio}\n`;
@@ -488,6 +509,50 @@ exports.generateLlmTxt = async (req, res) => {
         res.status(200).send(md);
     } catch (error) {
         res.status(500).send(`# Error generating LLM context: ${error.message}`);
+    }
+};
+
+// =============================================
+// 📝 CLINIC DEMO & ONBOARDING INQUIRY
+// POST /api/public/clinic-inquiry
+// =============================================
+exports.submitClinicInquiry = async (req, res) => {
+    try {
+        const { clinicName, doctorName, specialty, city, phone, email, notes } = req.body;
+        console.log(`🏥 [NEW CLINIC DEMO REQUEST] ${clinicName} (${city}) - Dr. ${doctorName}, Phone: ${phone}`);
+
+        // Send notification email to admin/founder if mailer is configured
+        try {
+            const { sendEmail } = require('../utils/send_email');
+            const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER;
+            if (adminEmail) {
+                await sendEmail(
+                    adminEmail,
+                    `🏥 New Clinic Demo Request: ${clinicName} (${city})`,
+                    `<div style="font-family: sans-serif; padding: 20px;">
+                        <h2>New Clinic Demo & Trial Request</h2>
+                        <p><strong>Clinic:</strong> ${clinicName}</p>
+                        <p><strong>Doctor/Contact:</strong> Dr. ${doctorName}</p>
+                        <p><strong>Specialty:</strong> ${specialty}</p>
+                        <p><strong>City:</strong> ${city}</p>
+                        <p><strong>Phone:</strong> ${phone}</p>
+                        <p><strong>Email:</strong> ${email || 'N/A'}</p>
+                        <p><strong>Notes / Preferred Demo Time:</strong> ${notes || 'None'}</p>
+                        <p><em>Action required: Contact within 2 hours to confirm on-site visit and deliver QR standee.</em></p>
+                    </div>`
+                );
+            }
+        } catch (mailErr) {
+            console.warn('⚠️ Demo email notification warning:', mailErr.message);
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Clinic demo request received successfully. Our team will contact you shortly.'
+        });
+    } catch (err) {
+        console.error('❌ Clinic inquiry error:', err.message);
+        res.status(500).json({ success: false, message: 'Failed to submit clinic inquiry.' });
     }
 };
 

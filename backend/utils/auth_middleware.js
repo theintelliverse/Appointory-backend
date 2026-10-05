@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const protect = (req, res, next) => {
+const protect = async (req, res, next) => {
     let token = req.headers.authorization;
 
     if (token && token.startsWith('Bearer')) {
@@ -9,6 +9,18 @@ const protect = (req, res, next) => {
             token = token.split(' ')[1];
             // Use the constant secret
             const decoded = jwt.verify(token, JWT_SECRET);
+
+            if (typeof decoded.tokenVersion === 'number' && decoded.id) {
+                const User = require('../models/User');
+                const user = await User.findById(decoded.id).select('tokenVersion isActive deletedAt');
+                if (user && user.tokenVersion !== decoded.tokenVersion) {
+                    return res.status(401).json({ message: "Session revoked. Please log in again." });
+                }
+                if (user && (!user.isActive || user.deletedAt)) {
+                    return res.status(401).json({ message: "Account is inactive." });
+                }
+            }
+
             req.user = decoded;
             next();
         } catch (error) {
@@ -37,8 +49,16 @@ const protectPatient = async (req, res, next) => {
     if (!token) return res.status(401).json({ message: "No token, authorization denied" });
 
     try {
-        // 🚨 FIXED: Now uses the same secret as the protect function
         const decoded = jwt.verify(token, JWT_SECRET);
+
+        if (typeof decoded.tokenVersion === 'number' && decoded.id) {
+            const Patient = require('../models/Patient');
+            const patient = await Patient.findById(decoded.id).select('tokenVersion');
+            if (patient && patient.tokenVersion !== decoded.tokenVersion) {
+                return res.status(401).json({ message: "Session revoked. Please log in again." });
+            }
+        }
+
         req.user = decoded;
         next();
     } catch (err) {

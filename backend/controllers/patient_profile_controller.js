@@ -60,24 +60,56 @@ exports.getPatientProfile = async (req, res) => {
             });
         }
 
-        const lockerProfile = patientDoc || lockerProfiles?.[0] || null;
-
-        // Fallback for mixed formatting in MedicalRecord.patientPhone
-        let visitHistory = regexMatchedVisits;
-        if (cleanPhone && (!visitHistory || visitHistory.length === 0)) {
-            const allVisits = await MedicalRecord.find({ patientPhone: { $exists: true, $ne: null } })
-                .populate('clinicId', 'name address')
-                .populate('doctorId', 'name specialization')
-                .sort({ visitDate: -1 });
-
-            visitHistory = allVisits.filter((visit) => {
-                const normalized = String(visit.patientPhone || '').replace(/\D/g, '').slice(-10);
-                return normalized === cleanPhone;
-            });
+        // Determine target patient profile (supports switching between family members via ?memberId=...)
+        const requestedMemberId = req.query.memberId;
+        let targetPatient = null;
+        if (requestedMemberId) {
+            try {
+                targetPatient = await Patient.findOne({
+                    _id: requestedMemberId,
+                    $or: [
+                        { _id: patientId },
+                        { accountId: patientId }
+                    ],
+                    mergedInto: null
+                });
+            } catch (_) {}
         }
 
-        // 🧩 MERGE DATA - Map MedicalRecord and Patient.medicalHistory with complete medicine details
-        const medicalRecordHistory = (visitHistory || []).map(visit => {
+        if (!targetPatient) {
+            targetPatient = patientDoc || lockerProfiles?.[0] || null;
+        }
+
+        if (!targetPatient) {
+            return res.status(404).json({ success: false, message: 'Patient profile not found.' });
+        }
+
+        // Fetch linked family members for profile switching
+        const primaryAccountId = targetPatient.accountId || (targetPatient.isPrimaryAccount ? targetPatient._id : patientId);
+        let familyMembers = [];
+        if (primaryAccountId) {
+            familyMembers = await Patient.find({
+                $or: [
+                    { _id: primaryAccountId },
+                    { accountId: primaryAccountId }
+                ],
+                mergedInto: null
+            }).sort({ isPrimaryAccount: -1, createdAt: 1 });
+        }
+
+        // 🧩 Filter visits specifically for the active patient (by patientId or patientName)
+        const targetPatientNameLower = (targetPatient.name || '').trim().toLowerCase();
+        const matchedVisits = (visitHistory || []).filter(visit => {
+            if (visit.patientId && targetPatient._id) {
+                return visit.patientId.toString() === targetPatient._id.toString();
+            }
+            if (visit.patientName && targetPatientNameLower) {
+                return visit.patientName.trim().toLowerCase() === targetPatientNameLower;
+            }
+            return true;
+        });
+
+        const medicalRecordHistory = matchedVisits.map(visit => {
             const medicineData = (visit.medicines || []).map(m => ({
                 name: m.name || '',
                 strength: m.strength || m.amount || '',
@@ -102,8 +134,8 @@ exports.getPatientProfile = async (req, res) => {
             };
         });
 
-        // Also check if lockerProfiles have medicalHistory
-        const directPatientHistory = (lockerProfiles || []).flatMap(p => p.medicalHistory || []).map(h => ({
+        // Patient's own direct medicalHistory
+        const directPatientHistory = (targetPatient.medicalHistory || []).map(h => ({
             visitId: h.visitId || h._id,
             date: h.date,
             doctorName: h.doctorName || 'Consultant Specialist',
@@ -137,42 +169,62 @@ exports.getPatientProfile = async (req, res) => {
         }
         medicalHistory.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
-        // 🧩 Merge documents from all matching patient profiles and dedupe
-        const mergedDocuments = (lockerProfiles || []).flatMap((p) => p.documents || []);
+        // 🧩 Documents: strictly for this target patient (isolated from other family members)
         const toDocKey = (doc) => {
             if (doc?._id) return `id:${doc._id.toString()}`;
             if (doc?.publicId) return `public:${doc.publicId}`;
             return `url:${doc?.fileUrl || ''}`;
         };
+        const rawDocs = targetPatient.documents || [];
         const documents = Array.from(
-            new Map(mergedDocuments.map((doc) => [toDocKey(doc), doc])).values()
+            new Map(rawDocs.map((doc) => [toDocKey(doc), doc])).values()
         ).sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
 
-        // 🧩 Merge vitals from all matching patient profiles (latest first)
-        const vitals = (lockerProfiles || [])
-            .flatMap((p) => p.vitals || [])
+        // 🧩 Vitals: strictly for this target patient
+        const vitals = [...(targetPatient.vitals || [])]
             .sort((a, b) => new Date(b.recordedAt || 0) - new Date(a.recordedAt || 0));
 
+        // 🧩 Invoices: filter for target patient
+        const filteredInvoices = (patientInvoices || []).filter(inv => {
+            if (inv.patientId && targetPatient._id) {
+                return inv.patientId.toString() === targetPatient._id.toString();
+            }
+            if (inv.patientName && targetPatientNameLower) {
+                return inv.patientName.trim().toLowerCase() === targetPatientNameLower;
+            }
+            return true;
+        });
+
         const responseData = {
-            _id: lockerProfile?._id || patientId,
-            name: lockerProfile?.name || visitHistory[0]?.patientName || req.user.name || "Valued Patient",
-            phone: lockerProfile?.phone || cleanPhone || req.user.phone,
-            email: lockerProfile?.email || "",
-            age: lockerProfile?.age || null,
-            gender: lockerProfile?.gender || null,
-            bloodGroup: lockerProfile?.bloodGroup || null,
-            address: lockerProfile?.address || "",
-            allergies: lockerProfile?.allergies || "",
-            dob: lockerProfile?.dob || null,
+            _id: targetPatient._id,
+            name: targetPatient.name || "Valued Patient",
+            phone: targetPatient.phone || cleanPhone || req.user.phone,
+            relationship: targetPatient.relationship || 'Self',
+            isPrimaryAccount: Boolean(targetPatient.isPrimaryAccount),
+            isMinor: Boolean(targetPatient.isMinor),
+            guardianName: targetPatient.guardianName || null,
+            email: targetPatient.email || "",
+            age: targetPatient.age || null,
+            yearOfBirth: targetPatient.yearOfBirth || null,
+            gender: targetPatient.gender || null,
+            bloodGroup: targetPatient.bloodGroup || null,
+            address: targetPatient.address || "",
+            allergies: targetPatient.allergies || "",
+            dob: targetPatient.dob || null,
             documents: documents,
             medicalHistory: medicalHistory,
             visitHistory: medicalHistory,
             vitals: vitals,
-            invoices: patientInvoices || [],
+            invoices: filteredInvoices,
+            familyMembers: familyMembers.map(m => ({
+                _id: m._id,
+                name: m.name,
+                relationship: m.relationship || (m.isPrimaryAccount ? 'Self' : 'Family Member'),
+                isPrimaryAccount: Boolean(m.isPrimaryAccount),
+                isMinor: Boolean(m.isMinor)
+            })),
             lastUpdated: Date.now()
         };
-
-        console.log(`✅ Success: Matched profiles: ${lockerProfiles.length}, Documents: ${documents.length}, Vitals: ${vitals.length}`);
 
         return res.status(200).json({
             success: true,
@@ -271,11 +323,24 @@ exports.updatePatientProfile = async (req, res) => {
 exports.uploadDocument = async (req, res) => {
     try {
         const patientId = req.user.id;
-        const cleanPhone = req.user.phone.replace(/\D/g, '').slice(-10);
-        const phoneRegex = new RegExp(cleanPhone + '$');
+        const cleanPhone = req.user.phone ? req.user.phone.replace(/\D/g, '').slice(-10) : '';
+        const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
+        const targetMemberId = req.body.memberId || req.body.patientId;
 
-        let patient = await Patient.findById(patientId);
+        let patient = null;
+        if (targetMemberId) {
+            try {
+                patient = await Patient.findOne({
+                    _id: targetMemberId,
+                    $or: [{ _id: patientId }, { accountId: patientId }]
+                });
+            } catch (_) {}
+        }
+
         if (!patient) {
+            patient = await Patient.findById(patientId);
+        }
+        if (!patient && phoneRegex) {
             patient = await Patient.findOne({ phone: phoneRegex });
         }
 

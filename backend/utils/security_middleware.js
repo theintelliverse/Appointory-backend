@@ -61,6 +61,13 @@ const publicWriteLimiter = rateLimit({
     handler: makeHandler('Too many public write requests. Please wait before trying again.')
 });
 
+const slotHoldLimiter = rateLimit({
+    ...baseLimiterOptions,
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    handler: makeHandler('Too many slot hold requests from this network. Please wait a few minutes before selecting another slot.')
+});
+
 const securityHeaders = helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
@@ -75,5 +82,6 @@ module.exports = {
     otpVerifyLimiter,
     passwordResetLimiter,
     publicReadLimiter,
-    publicWriteLimiter
+    publicWriteLimiter,
+    slotHoldLimiter
 };

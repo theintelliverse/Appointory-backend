@@ -220,17 +220,44 @@ exports.getPublicDoctors = async (req, res) => {
 };
 
 // --- 🗄️ GET PATIENT FULL PROFILE (The Digital Locker) ---
+// Scoped to specific patientId or patientName to strictly isolate reports across family members
 exports.getPatientFullProfile = async (req, res) => {
     try {
         const { phone } = req.params;
+        const { patientId, patientName } = req.query;
 
-        // Normalize phone to search (last 10 digits)
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        let patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        let patient = null;
+
+        // 1️⃣ Priority: Fetch by exact patientId if provided
+        if (patientId) {
+            try {
+                patient = await Patient.findOne({ _id: patientId, mergedInto: null });
+            } catch (_) {}
+        }
+
+        // 2️⃣ Priority: Fetch by exact name under phone if patientName provided
+        const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '';
+        if (!patient && cleanPhone && patientName && patientName.trim()) {
+            const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i'),
+                mergedInto: null
+            });
+        }
+
+        // 3️⃣ Priority: Find primary account or direct phone match
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ 
+                phone: new RegExp(cleanPhone + '$'), 
+                mergedInto: null,
+                $or: [{ isPrimaryAccount: true }, { accountId: null }]
+            }) || await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
 
         if (!patient) {
             // Fallback 1: Search all patients by clean last 10 digits
-            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } });
+            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null }, mergedInto: null });
             patient = allProfiles.find(p => String(p.phone || '').replace(/\D/g, '').slice(-10) === cleanPhone);
         }
 
@@ -258,11 +285,219 @@ exports.getPatientFullProfile = async (req, res) => {
             });
         }
 
+        // Fetch linked family members (either this patient's members, or siblings under same accountId)
+        let familyMembers = [];
+        const primaryAccountId = patient.accountId || (patient.isPrimaryAccount ? patient._id : null);
+        if (primaryAccountId) {
+            familyMembers = await Patient.find({
+                accountId: primaryAccountId,
+                _id: { $ne: patient._id },
+                mergedInto: null
+            }).sort({ createdAt: 1 });
+        }
+
         res.status(200).json({
             success: true,
-            data: patient
+            data: patient,
+            familyMembers: familyMembers.map(m => ({
+                _id: m._id,
+                name: m.name,
+                relationship: m.relationship || 'Family Member',
+                age: m.age,
+                gender: m.gender,
+                bloodGroup: m.bloodGroup,
+                isMinor: m.isMinor,
+                guardianName: m.guardianName
+            }))
         });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- 👨‍👩‍👧‍👦 LOOKUP PATIENT & FAMILY MEMBERS BY PHONE (Receptionist / Doctor) ---
+exports.lookupPatientFamily = async (req, res) => {
+    try {
+        const { phone } = req.params;
+        if (!phone) {
+            return res.status(400).json({ success: false, message: "Phone number is required." });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        if (cleanPhone.length < 10) {
+            return res.status(200).json({ success: true, count: 0, profiles: [] });
+        }
+
+        // 1. Find direct patient matches with this phone number
+        const directMatches = await Patient.find({
+            phone: new RegExp(cleanPhone + '$'),
+            mergedInto: null
+        }).sort({ createdAt: 1 });
+
+        // 2. Identify primary account or base accounts
+        let primaryPatient = directMatches.find(p => p.isPrimaryAccount || (!p.accountId && p.relationship === 'Self')) 
+            || directMatches.find(p => !p.accountId) 
+            || directMatches[0];
+
+        let familyMembers = [];
+        const seenIds = new Set();
+        const profiles = [];
+
+        // If primary patient exists, fetch its linked family members
+        if (primaryPatient) {
+            familyMembers = await Patient.find({
+                accountId: primaryPatient._id,
+                mergedInto: null
+            }).sort({ createdAt: 1 });
+        }
+
+        // Combine primary, family members, and any direct matches
+        const allCandidates = [
+            ...(primaryPatient ? [primaryPatient] : []),
+            ...familyMembers,
+            ...directMatches
+        ];
+
+        for (const p of allCandidates) {
+            const idStr = p._id.toString();
+            if (!seenIds.has(idStr)) {
+                seenIds.add(idStr);
+                profiles.push({
+                    _id: p._id,
+                    name: p.name,
+                    phone: p.phone || cleanPhone,
+                    relationship: p.relationship || (p.isPrimaryAccount || !p.accountId ? 'Self' : 'Family Member'),
+                    isPrimary: Boolean(p.isPrimaryAccount || (!p.accountId && p.relationship === 'Self') || (primaryPatient && primaryPatient._id.toString() === idStr)),
+                    age: p.age,
+                    yearOfBirth: p.yearOfBirth,
+                    gender: p.gender || 'Male',
+                    bloodGroup: p.bloodGroup || '',
+                    allergies: p.allergies || '',
+                    isMinor: Boolean(p.isMinor || (p.age && p.age < 18)),
+                    guardianName: p.guardianName || null,
+                    lastVisit: p.lastVisit || null
+                });
+            }
+        }
+
+        // If no profiles found in Patient collection, check Queue history as fallback suggestions
+        if (profiles.length === 0) {
+            const queueMatches = await Queue.find({
+                patientPhone: new RegExp(cleanPhone + '$')
+            }).sort({ createdAt: -1 }).limit(5);
+
+            const seenNames = new Set();
+            for (const q of queueMatches) {
+                if (q.patientName && !seenNames.has(q.patientName.toLowerCase().trim())) {
+                    seenNames.add(q.patientName.toLowerCase().trim());
+                    profiles.push({
+                        _id: null, // Temporary/historical
+                        name: q.patientName.trim(),
+                        phone: cleanPhone,
+                        relationship: 'Patient (Past Visit)',
+                        isPrimary: seenNames.size === 1,
+                        gender: 'Male',
+                        isHistorical: true
+                    });
+                }
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            cleanPhone,
+            count: profiles.length,
+            profiles,
+            primary: primaryPatient || (profiles.length > 0 ? profiles[0] : null)
+        });
+    } catch (error) {
+        console.error("❌ Error in lookupPatientFamily:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- ➕ RECEPTIONIST / STAFF: ADD NEW FAMILY MEMBER UNDER PHONE ---
+exports.addPatientFamilyMemberByStaff = async (req, res) => {
+    try {
+        const { phone, name, relationship, age, gender, bloodGroup, allergies, isMinor, guardianConsent } = req.body;
+
+        if (!phone) {
+            return res.status(400).json({ success: false, message: "Mobile number is required." });
+        }
+        if (!name || !name.trim()) {
+            return res.status(400).json({ success: false, message: "Patient name is required." });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        if (cleanPhone.length !== 10) {
+            return res.status(400).json({ success: false, message: "Please enter a valid 10-digit mobile number." });
+        }
+
+        // Find primary patient for this phone
+        let primaryPatient = await Patient.findOne({
+            phone: new RegExp(cleanPhone + '$'),
+            mergedInto: null,
+            $or: [{ isPrimaryAccount: true }, { accountId: null }]
+        }).sort({ createdAt: 1 });
+
+        const parsedAge = age ? parseInt(age) : null;
+        const minorFlag = Boolean(isMinor || (parsedAge !== null && parsedAge < 18));
+
+        let createdMember;
+
+        if (!primaryPatient) {
+            // First patient under this mobile number -> Create as Primary
+            createdMember = await Patient.create({
+                name: name.trim(),
+                phone: cleanPhone,
+                isPrimaryAccount: true,
+                relationship: relationship && relationship !== 'Self' ? relationship : 'Self',
+                age: parsedAge,
+                gender: gender || 'Male',
+                bloodGroup: bloodGroup || undefined,
+                allergies: allergies || undefined,
+                isMinor: minorFlag,
+                guardianConsent: minorFlag ? Boolean(guardianConsent) : false,
+                guardianConsentAt: minorFlag ? new Date() : null,
+                registeredOn: new Date()
+            });
+        } else {
+            // Primary account exists -> Create as linked Family Member
+            createdMember = await Patient.create({
+                name: name.trim(),
+                phone: cleanPhone,
+                accountId: primaryPatient._id,
+                isPrimaryAccount: false,
+                relationship: relationship || 'Family Member',
+                age: parsedAge,
+                gender: gender || 'Male',
+                bloodGroup: bloodGroup || undefined,
+                allergies: allergies || undefined,
+                isMinor: minorFlag,
+                guardianName: minorFlag ? primaryPatient.name : null,
+                guardianConsent: minorFlag ? true : false,
+                guardianConsentAt: minorFlag ? new Date() : null,
+                registeredOn: new Date()
+            });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: "Patient profile created successfully.",
+            member: {
+                _id: createdMember._id,
+                name: createdMember.name,
+                phone: cleanPhone,
+                relationship: createdMember.relationship,
+                age: createdMember.age,
+                gender: createdMember.gender,
+                bloodGroup: createdMember.bloodGroup,
+                isMinor: createdMember.isMinor,
+                isPrimary: createdMember.isPrimaryAccount
+            }
+        });
+    } catch (error) {
+        console.error("❌ Error in addPatientFamilyMemberByStaff:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -338,9 +573,16 @@ exports.updatePatientVitals = async (req, res) => {
             });
         }
 
-        // Find patient by last 10 digits
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        // Find patient by patientId first, then by cleanPhone
+        const targetPatientId = req.body.patientId || vitals?.patientId;
+        let patient = null;
+        if (targetPatientId) {
+            try { patient = await Patient.findById(targetPatientId); } catch (_) {}
+        }
+        if (!patient && phone) {
+            const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
 
         if (!patient) {
             return res.status(404).json({
@@ -454,21 +696,39 @@ exports.createPrescription = async (req, res) => {
             return res.status(400).json({ success: false, message: limitErr.message });
         }
 
+        const targetPatientId = req.body.patientId || null;
+
         // Create Medical Record
         const record = await MedicalRecord.create({
             clinicId,
             doctorId,
             patientName,
             patientPhone,
+            patientId: targetPatientId,
             diagnosis: diagnosis || notes || "General Consultation",
             notes: notes || "Issued directly from Prescription Records",
             medicines: medicines || [],
             visitDate: Date.now()
         });
 
-        // Add to digital locker history if the patient profile exists
+        // Add to digital locker history for the SPECIFIC patient (family member or primary)
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
-        const patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') });
+        let patient = null;
+        if (targetPatientId) {
+            try { patient = await Patient.findById(targetPatientId); } catch (_) {}
+        }
+        if (!patient && cleanPhone && patientName) {
+            const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i'),
+                mergedInto: null
+            });
+        }
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
+
         if (patient) {
             patient.medicalHistory.push({
                 visitId: record._id,
@@ -479,6 +739,7 @@ exports.createPrescription = async (req, res) => {
                 medicines: medicines || [],
                 symptoms: notes || "Direct Prescription"
             });
+            patient.lastVisit = Date.now();
             await patient.save();
         }
 

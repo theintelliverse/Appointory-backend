@@ -53,8 +53,25 @@ const queueSchema = mongoose.Schema({
       amount: { type: String } // Dosage/Quantity (Ketla Amount)
     }
   ],
-  consultationNotes: { type: String }, // Consultation notes from doctor
+  patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
+  // Reminder and follow-up tracking
+  reminder24hSent: { type: Boolean, default: false },
+  reminder24hSkipped: { type: String, default: null }, // e.g., 'no_opt_in'
+  reminder24hAttempts: { type: Number, default: 0 },
+  reminder24hMessageId: { type: String, default: null }, // Idempotency key from WhatsApp provider
+  reminder2hSent: { type: Boolean, default: false },
+  reminder2hSkipped: { type: String, default: null }, // e.g., 'no_opt_in'
+  reminder2hAttempts: { type: Number, default: 0 },
+  reminder2hMessageId: { type: String, default: null }, // Idempotency key from WhatsApp provider
+  claimedAt: { type: Date, default: null },
+  followUpSent: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
+
+// Indexes for fast reminder claiming and status queries
+queueSchema.index({ status: 1, visitType: 1, reminder24hSent: 1, appointmentDate: 1 });
+queueSchema.index({ status: 1, visitType: 1, reminder2hSent: 1, appointmentDate: 1 });
+queueSchema.index({ clinicId: 1, doctorId: 1, status: 1 });
+
 
 module.exports = mongoose.model('Queue', queueSchema);

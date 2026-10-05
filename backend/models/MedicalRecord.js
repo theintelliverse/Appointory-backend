@@ -5,6 +5,7 @@ const medicalRecordSchema = mongoose.Schema({
   doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   patientName: { type: String, required: true },
   patientPhone: { type: String, required: true },
+  patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
   tokenNumber: String,
   notes: { type: String }, // The text from the doctor's textarea
   diagnosis: { type: String }, // Diagnosis from doctor

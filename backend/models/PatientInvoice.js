@@ -26,6 +26,14 @@ const patientInvoiceSchema = mongoose.Schema({
   doctorName: { 
     type: String 
   },
+  doctorLicenseNumber: { 
+    type: String, 
+    default: '' 
+  },
+  clinicGstin: { 
+    type: String, 
+    default: '' 
+  },
   billingType: { 
     type: String, 
     enum: ['clinic', 'lab'], 
@@ -43,6 +51,10 @@ const patientInvoiceSchema = mongoose.Schema({
   subtotal: { type: Number, required: true, default: 0 },
   discount: { type: Number, default: 0 },
   tax: { type: Number, default: 0 },
+  taxRate: { type: Number, default: 0 },
+  cgst: { type: Number, default: 0 },
+  sgst: { type: Number, default: 0 },
+  verificationToken: { type: String, default: '' },
   onlinePendingDues: { type: Number, default: 0 }, // Online booking dues ("paisa bakki")
   totalAmount: { type: Number, required: true, default: 0 },
   paidAmount: { type: Number, required: true, default: 0 },

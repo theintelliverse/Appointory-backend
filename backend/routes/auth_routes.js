@@ -73,6 +73,14 @@ router.get('/patient/appointments', protectPatient, patientController.getPatient
 router.get('/patient/invoices', protectPatient, require('../controllers/billing_controller').getPatientInvoices);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
+// 👨‍👩‍👧‍👦 SAVED FAMILY PROFILES (PROTECTED)
+router.get('/patient/family-members', protectPatient, patientController.getFamilyMembers);
+router.post('/patient/family-members', protectPatient, patientController.addFamilyMember);
+router.put('/patient/family-members/:memberId', protectPatient, patientController.updateFamilyMember);
+router.delete('/patient/family-members/:memberId', protectPatient, patientController.deleteFamilyMember);
+router.get('/patient/family-candidates', protectPatient, patientController.getFamilyCandidates);
+router.post('/patient/claim-candidate', protectPatient, patientController.claimFamilyCandidate);
+
 // Middleware to accept either 'document' or 'file' field and handle multer errors cleanly
 const documentUploadMiddleware = (req, res, next) => {
     upload.fields([

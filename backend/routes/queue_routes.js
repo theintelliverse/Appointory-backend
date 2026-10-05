@@ -26,10 +26,12 @@ const {
     getDoctorDashboardStats,
     getWaitEstimation,
     savePrivateNote,
-    getPrivateNotes
+    getPrivateNotes,
+    sendQueueAlert
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
+const { requireService } = require('../utils/service_gate_middleware');
 
 // ==================================================
 // 1️⃣ PUBLIC ROUTES (NO AUTH REQUIRED)
@@ -75,6 +77,9 @@ router.get('/scheduled/next-7-days', authorize('receptionist', 'doctor', 'admin'
 // Status Management
 router.patch('/start/:id', authorize('receptionist', 'doctor'), startConsultation);
 router.patch('/complete/:id', authorize('receptionist', 'doctor'), completeVisit);
+
+// 📲 Dual SMS & WhatsApp Notification Trigger (Requires active paid messaging service)
+router.post('/notify/:id', authorize('receptionist', 'admin', 'doctor'), requireService('messaging'), sendQueueAlert);
 
 // 🩺 VITALS UPDATE (Doctor)
 router.post('/update-vitals/:queueId', authorize('doctor'), updateVitals);

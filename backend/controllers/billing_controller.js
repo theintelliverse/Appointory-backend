@@ -3,6 +3,8 @@ const Patient = require('../models/Patient');
 const Queue = require('../models/Queue');
 const Clinic = require('../models/Clinic');
 const User = require('../models/User');
+const mongoose = require('../config/mongoose_connection');
+const crypto = require('crypto');
 
 // --- 🔍 FETCH PATIENT & APPOINTMENT DATA FOR BILLING ---
 exports.fetchPatientBillingData = async (req, res) => {
@@ -25,8 +27,9 @@ exports.fetchPatientBillingData = async (req, res) => {
         const clinicFees = {
             feeConsult: clinic?.feeConsult || 500,
             feeFollowupConsult: clinic?.feeFollowupConsult || 300,
-            taxEnabled: clinic?.taxEnabled !== undefined ? clinic.taxEnabled : true,
-            taxRate: clinic?.taxRate ?? 18,
+            taxEnabled: clinic?.taxEnabled !== undefined ? clinic.taxEnabled : false,
+            taxRate: clinic?.taxRate ?? 0,
+            gstin: clinic?.gstin || '',
             feeLab: clinic?.feeLab || 450,
             feeEmergency: clinic?.feeEmergency || 300,
             feeMedicine: clinic?.feeMedicine || 120
@@ -234,6 +237,24 @@ exports.createInvoice = async (req, res) => {
         const prefix = billingType === 'lab' ? 'INV-LAB' : 'INV-CLN';
         const invoiceNumber = `${prefix}-${dateStr}-${String(countToday + 1).padStart(4, '0')}`;
 
+        // Fetch Clinic Details (GSTIN) & Doctor's Medical Registration / License
+        const clinicDoc = await Clinic.findById(clinicId).select('gstin taxRate').lean();
+        const clinicGstin = clinicDoc?.gstin || '';
+
+        let doctorLicenseNumber = '';
+        if (doctorId) {
+            const docUser = await User.findById(doctorId).select('medicalLicenseNumber').lean();
+            if (docUser?.medicalLicenseNumber) {
+                doctorLicenseNumber = docUser.medicalLicenseNumber;
+            }
+        }
+
+        const numTax = Number(tax) || 0;
+        const cgst = Number((numTax / 2).toFixed(2));
+        const sgst = Number((numTax / 2).toFixed(2));
+        const effectiveTaxRate = Number(req.body.taxRate) || (clinicDoc?.taxRate ?? 0);
+        const verificationToken = crypto.randomBytes(16).toString('hex');
+
         const invoice = await PatientInvoice.create({
             invoiceNumber,
             clinicId,
@@ -241,11 +262,17 @@ exports.createInvoice = async (req, res) => {
             patientPhone,
             doctorId: doctorId || null,
             doctorName: doctorName || '',
+            doctorLicenseNumber,
+            clinicGstin,
             billingType,
             items,
             subtotal,
             discount,
-            tax,
+            tax: numTax,
+            taxRate: effectiveTaxRate,
+            cgst,
+            sgst,
+            verificationToken,
             onlinePendingDues,
             totalAmount,
             paidAmount,
@@ -421,7 +448,8 @@ exports.getInvoiceById = async (req, res) => {
         const clinicId = req.user.clinicId;
 
         const invoice = await PatientInvoice.findOne({ _id: id, clinicId })
-            .populate('clinicId', 'name address contactPhone clinicCode')
+            .populate('clinicId', 'name address contactPhone clinicCode gstin email')
+            .populate('doctorId', 'name specialization medicalLicenseNumber')
             .lean();
 
         if (!invoice) {
@@ -457,8 +485,9 @@ exports.getBillingSettings = async (req, res) => {
             settings: {
                 feeConsult: clinic.feeConsult ?? 500,
                 feeFollowupConsult: clinic.feeFollowupConsult ?? 300,
-                taxEnabled: clinic.taxEnabled !== undefined ? clinic.taxEnabled : true,
-                taxRate: clinic.taxRate ?? 18,
+                taxEnabled: clinic.taxEnabled !== undefined ? clinic.taxEnabled : false,
+                taxRate: clinic.taxRate ?? 0,
+                gstin: clinic.gstin || '',
                 feeLab: clinic.feeLab ?? 450,
                 feeEmergency: clinic.feeEmergency ?? 300,
                 feeMedicine: clinic.feeMedicine ?? 120
@@ -473,7 +502,7 @@ exports.getBillingSettings = async (req, res) => {
 exports.updateBillingSettings = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;
-        const { feeConsult, feeFollowupConsult, taxEnabled, taxRate, feeLab, feeEmergency, feeMedicine } = req.body;
+        const { feeConsult, feeFollowupConsult, taxEnabled, taxRate, feeLab, feeEmergency, feeMedicine, gstin } = req.body;
 
         const updateData = {};
         if (feeConsult !== undefined) updateData.feeConsult = Number(feeConsult);
@@ -483,6 +512,7 @@ exports.updateBillingSettings = async (req, res) => {
         if (feeLab !== undefined) updateData.feeLab = Number(feeLab);
         if (feeEmergency !== undefined) updateData.feeEmergency = Number(feeEmergency);
         if (feeMedicine !== undefined) updateData.feeMedicine = Number(feeMedicine);
+        if (gstin !== undefined) updateData.gstin = String(gstin).trim().toUpperCase();
 
         const updatedClinic = await Clinic.findByIdAndUpdate(
             clinicId,
@@ -498,6 +528,7 @@ exports.updateBillingSettings = async (req, res) => {
                 feeFollowupConsult: updatedClinic.feeFollowupConsult,
                 taxEnabled: updatedClinic.taxEnabled,
                 taxRate: updatedClinic.taxRate,
+                gstin: updatedClinic.gstin || '',
                 feeLab: updatedClinic.feeLab,
                 feeEmergency: updatedClinic.feeEmergency,
                 feeMedicine: updatedClinic.feeMedicine
@@ -679,6 +710,98 @@ exports.getPatientInvoices = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Failed to fetch patient invoices: " + error.message
+        });
+    }
+};
+
+// --- 🛡️ PUBLIC ANTI-FRAUD INVOICE VERIFICATION ---
+exports.verifyPublicInvoice = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || id.trim().length === 0) {
+            return res.status(400).json({ success: false, message: "Valid Invoice ID or Number is required." });
+        }
+
+        const cleanId = id.trim();
+        const isObjectId = mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24;
+        const query = isObjectId ? { _id: cleanId } : { invoiceNumber: cleanId.toUpperCase() };
+
+        const invoice = await PatientInvoice.findOne(query)
+            .populate('clinicId', 'name address contactPhone clinicCode gstin email')
+            .populate('doctorId', 'name specialization medicalLicenseNumber')
+            .lean();
+
+        if (!invoice) {
+            return res.status(404).json({
+                success: false,
+                verified: false,
+                message: "Invoice not found or invalid verification link."
+            });
+        }
+
+        // DPDP Act privacy compliance: mask patient PII on public verification page
+        const maskName = (name) => {
+            if (!name) return 'Patient';
+            const parts = name.trim().split(/\s+/);
+            return parts.map(p => {
+                if (p.length <= 2) return p[0] + '*';
+                return p[0] + '*'.repeat(Math.min(4, p.length - 2)) + p[p.length - 1];
+            }).join(' ');
+        };
+
+        const maskPhone = (phone) => {
+            if (!phone || phone.length < 6) return 'XXXXXX';
+            const digits = phone.replace(/\D/g, '');
+            if (digits.length >= 10) {
+                return digits.slice(0, 2) + '******' + digits.slice(-2);
+            }
+            return digits.slice(0, 2) + '*'.repeat(digits.length - 3) + digits.slice(-1);
+        };
+
+        return res.status(200).json({
+            success: true,
+            verified: true,
+            invoice: {
+                invoiceNumber: invoice.invoiceNumber,
+                billingDate: invoice.billingDate,
+                billingType: invoice.billingType,
+                clinic: {
+                    name: invoice.clinicId?.name || 'Authorized Clinic',
+                    address: invoice.clinicId?.address || '',
+                    contactPhone: invoice.clinicId?.contactPhone || '',
+                    clinicCode: invoice.clinicId?.clinicCode || '',
+                    gstin: invoice.clinicGstin || invoice.clinicId?.gstin || ''
+                },
+                doctor: {
+                    name: invoice.doctorName || invoice.doctorId?.name || 'Consultant Doctor',
+                    specialization: invoice.doctorId?.specialization || 'General',
+                    medicalLicenseNumber: invoice.doctorLicenseNumber || invoice.doctorId?.medicalLicenseNumber || ''
+                },
+                patient: {
+                    name: maskName(invoice.patientName),
+                    phone: maskPhone(invoice.patientPhone)
+                },
+                items: invoice.items || [],
+                subtotal: invoice.subtotal || 0,
+                discount: invoice.discount || 0,
+                tax: invoice.tax || 0,
+                taxRate: invoice.taxRate || 0,
+                cgst: invoice.cgst || (invoice.tax ? Number((invoice.tax / 2).toFixed(2)) : 0),
+                sgst: invoice.sgst || (invoice.tax ? Number((invoice.tax / 2).toFixed(2)) : 0),
+                totalAmount: invoice.totalAmount || 0,
+                paidAmount: invoice.paidAmount || 0,
+                remainingDue: invoice.remainingDue || 0,
+                paymentMode: invoice.paymentMode || 'Cash',
+                paymentStatus: invoice.paymentStatus || 'Paid',
+                verifiedAt: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error("Public Invoice Verification Error:", error);
+        return res.status(500).json({
+            success: false,
+            verified: false,
+            message: "Internal server error during invoice verification: " + error.message
         });
     }
 };

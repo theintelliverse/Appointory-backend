@@ -21,8 +21,9 @@ const clinicSchema = mongoose.Schema({
   // Billing & Queue Rules Config
   feeConsult: { type: Number, default: 500 },
   feeFollowupConsult: { type: Number, default: 300 },
-  taxEnabled: { type: Boolean, default: true },
-  taxRate: { type: Number, default: 18 },
+  taxEnabled: { type: Boolean, default: false },
+  taxRate: { type: Number, default: 0 },
+  gstin: { type: String, default: '', trim: true, uppercase: true },
   feeLab: { type: Number, default: 450 },
   feeEmergency: { type: Number, default: 300 },
   feeMedicine: { type: Number, default: 120 },
@@ -75,7 +76,14 @@ const clinicSchema = mongoose.Schema({
     count: { type: Number, default: 0 }
   },
   accreditation: [{ type: String }],
-  videoUrl: { type: String, default: '' }
+  videoUrl: { type: String, default: '' },
+  publicListingConsent: { type: Boolean, default: false },
+  milestones: {
+    profileCompletedAt: { type: Date, default: null },
+    firstDoctorAddedAt: { type: Date, default: null },
+    firstPatientAddedAt: { type: Date, default: null },
+    firstAppointmentAt: { type: Date, default: null }
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Clinic', clinicSchema);

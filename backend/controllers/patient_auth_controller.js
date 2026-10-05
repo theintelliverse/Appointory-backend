@@ -3,6 +3,7 @@ const Queue = require("../models/Queue");
 const User = require("../models/User");
 const Clinic = require("../models/Clinic");
 const { generateToken } = require('../utils/auth_helper');
+const { normalizeIndianPhone } = require('../utils/phone_helper');
 const MedicalRecord = require('../models/MedicalRecord');
 const Otp = require('../models/Otp');
 const bcrypt = require('bcryptjs');
@@ -27,11 +28,21 @@ const getTwilioClient = () => {
 exports.sendOTP = async (req, res) => {
     try {
         const { phone, isRegistration } = req.body;
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const { isValid, normalized: cleanPhone, error: phoneError } = normalizeIndianPhone(phone);
+
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: phoneError });
+        }
 
         // CHECK FOR DUPLICATE REGISTRATION
         if (isRegistration) {
-            const existingPatient = await Patient.findOne({ phone: cleanPhone });
+            const existingPatient = await Patient.findOne({
+                phone: cleanPhone,
+                $or: [
+                    { isPrimaryAccount: true },
+                    { passwordHash: { $exists: true, $ne: null } }
+                ]
+            });
             if (existingPatient) {
                 return res.status(400).json({
                     success: false,
@@ -378,17 +389,17 @@ exports.registerPatient = async (req, res) => {
  */
 exports.bookAppointment = async (req, res) => {
     try {
-        const { clinicId, doctorId, appointmentDate, reason, rescheduleAppointmentId } = req.body;
+        const { clinicId, doctorId, appointmentDate, reason, rescheduleAppointmentId, patientMemberId, holdToken } = req.body;
         const patientId = req.user?.id;
         const patientPhone = req.user?.phone;
 
-        console.log('🔍 Booking appointment:', { clinicId, doctorId, appointmentDate, reason, patientId, rescheduleAppointmentId });
+        console.log('🔍 Booking appointment:', { clinicId, doctorId, appointmentDate, reason, patientId, rescheduleAppointmentId, patientMemberId });
 
         if (!clinicId || !doctorId || !appointmentDate) {
             return res.status(400).json({ success: false, message: "Clinic, doctor, and date are required" });
         }
 
-        // Get patient info — try by ID first, then fall back to phone
+        // Get primary patient info — try by ID first, then fall back to phone
         let patient = null;
         if (patientId) {
             try { patient = await Patient.findById(patientId); } catch (_) {}
@@ -399,6 +410,22 @@ exports.bookAppointment = async (req, res) => {
         }
         if (!patient) {
             return res.status(404).json({ success: false, message: "Patient profile not found. Please register to book an appointment." });
+        }
+
+        // Resolve target patient (Primary user vs. Saved Family Member)
+        let bookingPatient = patient;
+        if (patientMemberId && patientMemberId.toString() !== patient._id.toString()) {
+            const memberDoc = await Patient.findOne({
+                _id: patientMemberId,
+                $or: [
+                    { accountId: patient._id },
+                    { _id: patient._id }
+                ]
+            });
+            if (!memberDoc) {
+                return res.status(404).json({ success: false, message: "Selected family member profile not found." });
+            }
+            bookingPatient = memberDoc;
         }
 
         const { checkAndLinkPatient } = require('../utils/auth_middleware');
@@ -601,8 +628,9 @@ exports.bookAppointment = async (req, res) => {
         const queueEntry = await Queue.create({
             clinicId,
             doctorId,
-            patientName: patient.name,
-            patientPhone: patient.phone,
+            patientId: bookingPatient._id,
+            patientName: bookingPatient.name,
+            patientPhone: patient.phone, // Account holder's mobile receives notifications
             visitType: 'Appointment',
             appointmentDate: parsedAppointmentDate,
             reason: reason || '',
@@ -611,8 +639,8 @@ exports.bookAppointment = async (req, res) => {
             isEmergency: false
         });
 
-        // Add appointment to patient record
-        patient.appointments.push({
+        // Add appointment to target patient record
+        bookingPatient.appointments.push({
             queueId: queueEntry._id,
             clinicId,
             clinicName: clinic.name,
@@ -622,34 +650,55 @@ exports.bookAppointment = async (req, res) => {
             status: 'Scheduled'
         });
 
-        await patient.save();
+        await bookingPatient.save();
 
-        // Send request submitted SMS (not confirmation - pending receptionist approval)
+        // Release slot hold if holdToken provided
+        if (holdToken) {
+            try {
+                const SlotHold = require('../models/SlotHold');
+                await SlotHold.deleteOne({ holdToken });
+            } catch (holdErr) {
+                console.warn('⚠️ SlotHold cleanup error:', holdErr.message);
+            }
+        }
+
+        // Track clinic first appointment milestone for activation metrics
+        let isFirstAppointment = false;
+        if (!clinic.milestones?.firstAppointmentAt) {
+            isFirstAppointment = true;
+            if (!clinic.milestones) clinic.milestones = {};
+            clinic.milestones.firstAppointmentAt = new Date();
+            await clinic.save();
+        }
+
+        // Send request submitted SMS (pending receptionist approval)
         try {
             const cleanPhone = patient.phone.replace(/\D/g, '').slice(-10);
             const formattedPhone = `+91${cleanPhone}`;
+            const client = getTwilioClient();
 
-            if (!process.env.TWILIO_PHONE_NUMBER) {
-                throw new Error('Missing TWILIO_PHONE_NUMBER - Check .env file');
+            if (client && process.env.TWILIO_PHONE_NUMBER) {
+                const dateDisplay = new Date(parsedAppointmentDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+                await client.messages.create({
+                    body: `Your appointment request for ${bookingPatient.name} has been submitted to ${clinic.name} with Dr. ${doctor.name} for ${dateDisplay}. Receptionist will verify and confirm shortly. Request ID: ${queueEntry._id}`,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: formattedPhone
+                });
+                console.log(`✅ SMS Sent to ${formattedPhone}`);
             }
-
-            await client.messages.create({
-                body: `Your appointment request has been submitted to ${clinic.name} with Dr. ${doctor.name}. Date: ${new Date(appointmentDate).toLocaleDateString()}. The receptionist will verify and confirm shortly. Request ID: ${queueEntry._id}`,
-                from: process.env.TWILIO_PHONE_NUMBER,
-                to: formattedPhone
-            });
-            console.log(`✅ SMS Sent to ${formattedPhone}`);
         } catch (smsError) {
             console.error("❌ SMS Error - Patient Phone:", patient.phone, "Error:", smsError.message);
         }
 
         res.status(201).json({
             success: true,
+            isFirstAppointment,
             message: "Appointment request submitted successfully. Receptionist will verify and confirm shortly.",
             data: {
                 appointmentId: queueEntry._id,
                 clinicName: clinic.name,
                 doctorName: doctor.name,
+                patientName: bookingPatient.name,
                 appointmentDate,
                 status: 'Pending-Approval'
             }
@@ -765,9 +814,18 @@ exports.patientResetPassword = async (req, res) => {
             return res.status(404).json({ success: false, message: "Patient not found" });
         }
 
-        // Hash and update the password
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        // Validate password strength (at least 8 characters)
+        if (newPassword.length < 8) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 8 characters long for security."
+            });
+        }
+
+        // Hash and update the password with salt cost 12, increment tokenVersion to revoke all active JWT sessions
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
         patient.passwordHash = hashedPassword;
+        patient.tokenVersion = (patient.tokenVersion || 0) + 1;
         await patient.save();
 
         await Otp.deleteOne({ _id: record._id });
@@ -843,7 +901,11 @@ exports.patientLoginWithPassword = async (req, res) => {
             });
         }
 
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const { isValid, normalized: cleanPhone, error: phoneError } = normalizeIndianPhone(phone);
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: phoneError });
+        }
+
         const patient = await Patient.findOne({ phone: cleanPhone });
 
         if (!patient) {
@@ -869,11 +931,18 @@ exports.patientLoginWithPassword = async (req, res) => {
             });
         }
 
-        // Generate token
+        // Ensure isPrimaryAccount is true for registered password users
+        if (!patient.isPrimaryAccount) {
+            patient.isPrimaryAccount = true;
+            await patient.save();
+        }
+
+        // Generate token with tokenVersion
         const token = generateToken({
             id: patient._id.toString(),
             phone: cleanPhone,
-            role: 'patient'
+            role: 'patient',
+            tokenVersion: patient.tokenVersion || 0
         });
 
         console.log(`✅ Patient Login Success: ${patient.name} (${cleanPhone})`);
@@ -885,7 +954,9 @@ exports.patientLoginWithPassword = async (req, res) => {
             patient: {
                 id: patient._id,
                 name: patient.name,
-                phone: cleanPhone
+                phone: cleanPhone,
+                isPrimaryAccount: true,
+                relationship: patient.relationship || 'Self'
             }
         });
     } catch (error) {
@@ -902,7 +973,7 @@ exports.patientLoginWithPassword = async (req, res) => {
  */
 exports.registerWithOTPAndPassword = async (req, res) => {
     try {
-        const { phone, otp, name, age, gender, bloodGroup, password } = req.body;
+        const { phone, otp, name, age, yearOfBirth, gender, bloodGroup, password, whatsappOptIn, consentVersion } = req.body;
 
         if (!phone || !otp || !name || !password) {
             return res.status(400).json({
@@ -911,7 +982,17 @@ exports.registerWithOTPAndPassword = async (req, res) => {
             });
         }
 
-        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        const { isValid, normalized: cleanPhone, error: phoneError } = normalizeIndianPhone(phone);
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: phoneError });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 8 characters long for security."
+            });
+        }
 
         // Verify OTP
         const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
@@ -925,36 +1006,57 @@ exports.registerWithOTPAndPassword = async (req, res) => {
         // Delete OTP after verification
         await Otp.deleteOne({ _id: record._id });
 
-        // Check if patient already exists
-        const existingPatient = await Patient.findOne({ phone: cleanPhone });
+        // Check if primary account already registered
+        const existingPatient = await Patient.findOne({
+            phone: cleanPhone,
+            $or: [
+                { isPrimaryAccount: true },
+                { passwordHash: { $exists: true, $ne: null } }
+            ]
+        });
         if (existingPatient) {
             return res.status(400).json({
                 success: false,
-                message: "Phone number already registered"
+                message: "Phone number already registered with an account. Please login."
             });
         }
 
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
+        // Hash password with salt cost 12
+        const hashedPassword = await bcrypt.hash(password, 12);
 
-        // Create patient
+        const parsedAge = age ? parseInt(age) : null;
+        const parsedYear = yearOfBirth ? parseInt(yearOfBirth) : (parsedAge ? new Date().getFullYear() - parsedAge : null);
+
+        // Create primary patient account
         const newPatient = await Patient.create({
             phone: cleanPhone,
-            name,
+            name: name.trim(),
+            isPrimaryAccount: true,
+            relationship: 'Self',
             passwordHash: hashedPassword,
-            age: age ? parseInt(age) : null,
+            tokenVersion: 0,
+            age: parsedAge,
+            yearOfBirth: parsedYear,
             gender: gender || null,
-            bloodGroup: bloodGroup || null
+            bloodGroup: bloodGroup || null,
+            whatsappOptIn: !!whatsappOptIn,
+            whatsappOptInAt: whatsappOptIn ? new Date() : null,
+            consentHistory: [{
+                version: consentVersion || 'v1.0',
+                consentedAt: new Date()
+            }],
+            registeredOn: new Date()
         });
 
         // Generate token
         const token = generateToken({
             id: newPatient._id.toString(),
             phone: cleanPhone,
-            role: 'patient'
+            role: 'patient',
+            tokenVersion: 0
         });
 
-        console.log(`✅ New Patient Registered: ${newPatient.name} (${cleanPhone})`);
+        console.log(`✅ New Primary Patient Registered: ${newPatient.name} (${cleanPhone})`);
 
         res.status(201).json({
             success: true,
@@ -963,7 +1065,9 @@ exports.registerWithOTPAndPassword = async (req, res) => {
             patient: {
                 id: newPatient._id,
                 name: newPatient.name,
-                phone: cleanPhone
+                phone: cleanPhone,
+                isPrimaryAccount: true,
+                relationship: 'Self'
             }
         });
     } catch (error) {
@@ -1015,17 +1119,18 @@ exports.changePasswordWithOTP = async (req, res) => {
             });
         }
 
-        // Validate password strength (at least 6 characters)
-        if (newPassword.length < 6) {
+        // Validate password strength (at least 8 characters)
+        if (newPassword.length < 8) {
             return res.status(400).json({
                 success: false,
-                message: "Password must be at least 6 characters long"
+                message: "Password must be at least 8 characters long for security."
             });
         }
 
-        // Hash new password
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        // Hash new password with salt cost 12 and increment tokenVersion to revoke active sessions
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
         patient.passwordHash = hashedPassword;
+        patient.tokenVersion = (patient.tokenVersion || 0) + 1;
         await patient.save();
 
         console.log(`✅ Password Changed for: ${patient.name} (${cleanPhone})`);
@@ -1040,5 +1145,390 @@ exports.changePasswordWithOTP = async (req, res) => {
             success: false,
             message: "Failed to change password: " + error.message
         });
+    }
+};
+
+/**
+ * 👨‍👩‍👧‍👦 GET FAMILY MEMBERS
+ * Returns primary account and all linked family member profiles.
+ */
+exports.getFamilyMembers = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        if (!patientId) {
+            return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+        }
+
+        const primaryPatient = await Patient.findById(patientId);
+        if (!primaryPatient) {
+            return res.status(404).json({ success: false, message: 'Primary account not found.' });
+        }
+
+        const familyMembers = await Patient.find({
+            accountId: primaryPatient._id,
+            mergedInto: null
+        }).sort({ createdAt: 1 });
+
+        res.status(200).json({
+            success: true,
+            primary: {
+                _id: primaryPatient._id,
+                name: primaryPatient.name,
+                phone: primaryPatient.phone,
+                relationship: 'Self',
+                gender: primaryPatient.gender,
+                age: primaryPatient.age,
+                yearOfBirth: primaryPatient.yearOfBirth
+            },
+            familyMembers: familyMembers.map(m => ({
+                _id: m._id,
+                name: m.name,
+                relationship: m.relationship || 'Family Member',
+                isMinor: m.isMinor,
+                guardianName: m.guardianName,
+                gender: m.gender,
+                age: m.age,
+                yearOfBirth: m.yearOfBirth,
+                bloodGroup: m.bloodGroup,
+                allergies: m.allergies
+            }))
+        });
+    } catch (error) {
+        console.error('❌ Error fetching family members:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to fetch family members.' });
+    }
+};
+
+/**
+ * ➕ ADD FAMILY MEMBER
+ * Adds a saved family profile linked to the primary account.
+ * Minor consent (DPDP Act) enforced if age < 18.
+ */
+exports.addFamilyMember = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        const { name, relationship, age, yearOfBirth, gender, bloodGroup, allergies, isMinor, guardianConsent } = req.body;
+
+        if (!patientId) {
+            return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+        }
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({ success: false, message: 'Family member name is required.' });
+        }
+
+        const primaryPatient = await Patient.findById(patientId);
+        if (!primaryPatient) {
+            return res.status(404).json({ success: false, message: 'Primary account not found.' });
+        }
+
+        const parsedAge = age ? parseInt(age) : (yearOfBirth ? new Date().getFullYear() - parseInt(yearOfBirth) : null);
+        const parsedYear = yearOfBirth ? parseInt(yearOfBirth) : (parsedAge ? new Date().getFullYear() - parsedAge : null);
+        const minorFlag = Boolean(isMinor || (parsedAge !== null && parsedAge < 18));
+
+        if (minorFlag && !guardianConsent) {
+            return res.status(400).json({
+                success: false,
+                message: 'Parent or lawful guardian declaration is required for individuals under 18 years of age (DPDP Act).'
+            });
+        }
+
+        const newMember = await Patient.create({
+            name: name.trim(),
+            accountId: primaryPatient._id,
+            isPrimaryAccount: false,
+            relationship: relationship || 'Other',
+            isMinor: minorFlag,
+            guardianName: minorFlag ? primaryPatient.name : null,
+            guardianConsent: minorFlag ? true : false,
+            guardianConsentAt: minorFlag ? new Date() : null,
+            gender: gender || null,
+            age: parsedAge,
+            yearOfBirth: parsedYear,
+            bloodGroup: bloodGroup || null,
+            allergies: allergies || null,
+            registeredOn: new Date()
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Family member added successfully',
+            member: {
+                _id: newMember._id,
+                name: newMember.name,
+                relationship: newMember.relationship,
+                isMinor: newMember.isMinor,
+                guardianName: newMember.guardianName,
+                gender: newMember.gender,
+                age: newMember.age,
+                yearOfBirth: newMember.yearOfBirth,
+                bloodGroup: newMember.bloodGroup,
+                allergies: newMember.allergies
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error adding family member:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to add family member.' });
+    }
+};
+
+/**
+ * ✏️ UPDATE FAMILY MEMBER
+ */
+exports.updateFamilyMember = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        const { memberId } = req.params;
+        const { name, relationship, age, yearOfBirth, gender, bloodGroup, allergies } = req.body;
+
+        const member = await Patient.findOne({ _id: memberId, accountId: patientId });
+        if (!member) {
+            return res.status(404).json({ success: false, message: 'Family member not found.' });
+        }
+
+        if (name) member.name = name.trim();
+        if (relationship) member.relationship = relationship;
+        if (gender) member.gender = gender;
+        if (age !== undefined) {
+            member.age = age ? parseInt(age) : null;
+            if (member.age && !yearOfBirth) {
+                member.yearOfBirth = new Date().getFullYear() - member.age;
+            }
+        }
+        if (yearOfBirth !== undefined) member.yearOfBirth = yearOfBirth ? parseInt(yearOfBirth) : null;
+        if (bloodGroup !== undefined) member.bloodGroup = bloodGroup;
+        if (allergies !== undefined) member.allergies = allergies;
+
+        if (member.age !== null && member.age < 18) {
+            member.isMinor = true;
+        }
+
+        await member.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'Family member profile updated',
+            member
+        });
+    } catch (error) {
+        console.error('❌ Error updating family member:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to update family member profile.' });
+    }
+};
+
+/**
+ * 🗑️ UNLINK FAMILY MEMBER
+ * Soft-unlinks member so clinical records remain intact.
+ */
+exports.deleteFamilyMember = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        const { memberId } = req.params;
+
+        const member = await Patient.findOne({ _id: memberId, accountId: patientId });
+        if (!member) {
+            return res.status(404).json({ success: false, message: 'Family member not found.' });
+        }
+
+        member.accountId = null;
+        await member.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'Family member profile unlinked from your account.'
+        });
+    } catch (error) {
+        console.error('❌ Error unlinking family member:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to unlink family member.' });
+    }
+};
+
+/**
+ * 🔍 GET UNLINKED FAMILY CANDIDATES (Gated Claiming - Master Plan Section 2.3)
+ * Discovers unlinked Patient profiles matching the authenticated account holder's phone.
+ * PRIVACY GUARD: Never exposes full names or medical records prior to verification.
+ */
+exports.getFamilyCandidates = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        const currentPatient = await Patient.findById(patientId);
+        if (!currentPatient || !currentPatient.phone) {
+            return res.status(400).json({ success: false, message: 'Valid account phone required.' });
+        }
+
+        const { normalizeIndianPhone } = require('../utils/phone_helper');
+        const { isValid, normalized } = normalizeIndianPhone(currentPatient.phone);
+        if (!isValid || !normalized) {
+            return res.status(400).json({ success: false, message: 'Invalid phone format.' });
+        }
+
+        // Find candidate profiles sharing this normalized phone
+        // Excluding current user, already-linked family members, and soft-merged records
+        const candidates = await Patient.find({
+            _id: { $ne: currentPatient._id },
+            phone: new RegExp(normalized + '$'),
+            accountId: null,
+            mergedInto: null
+        }).select('_id name age gender visitedClinics appointments lastVisit createdAt');
+
+        if (candidates.length === 0) {
+            return res.status(200).json({
+                success: true,
+                candidateCount: 0,
+                candidates: []
+            });
+        }
+
+        // Check if shared desk/staff phone (>5 profiles or >=3 distinct clinics)
+        const allClinics = new Set();
+        candidates.forEach(c => (c.visitedClinics || []).forEach(cid => allClinics.add(cid.toString())));
+        if (candidates.length > 5 || allClinics.size >= 3) {
+            return res.status(200).json({
+                success: true,
+                isSharedDeskPhone: true,
+                candidateCount: 0,
+                candidates: [],
+                message: 'This mobile number is registered with an institutional or shared reception desk. Individual profiles must be verified at the clinic desk.'
+            });
+        }
+
+        // Return candidates with privacy-safe masked hints
+        const maskedCandidates = candidates.map(c => {
+            const trimmedName = (c.name || '').trim();
+            const maskedName = trimmedName.length > 2 
+                ? `${trimmedName[0]}***${trimmedName.slice(-1)}`
+                : '***';
+
+            return {
+                candidateId: c._id,
+                nameHint: maskedName,
+                age: c.age || null,
+                gender: c.gender || null
+            };
+        });
+
+        res.status(200).json({
+            success: true,
+            candidateCount: maskedCandidates.length,
+            candidates: maskedCandidates
+        });
+    } catch (error) {
+        console.error('❌ Error fetching family candidates:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to check for family profile candidates.' });
+    }
+};
+
+/**
+ * 🔐 CLAIM FAMILY CANDIDATE (Knowledge-Based Authentication)
+ * Verifies candidate identity using past clinic name or visit date.
+ */
+exports.claimFamilyCandidate = async (req, res) => {
+    try {
+        const patientId = req.user?.id;
+        const { candidateId, verificationType, verificationValue, relationship } = req.body;
+
+        if (!candidateId || !verificationType || !verificationValue) {
+            return res.status(400).json({
+                success: false,
+                message: 'Candidate ID, verification type (clinic_name or visit_date), and verification value are required.'
+            });
+        }
+
+        const currentPatient = await Patient.findById(patientId);
+        if (!currentPatient || !currentPatient.phone) {
+            return res.status(400).json({ success: false, message: 'Valid primary account required.' });
+        }
+
+        const candidate = await Patient.findById(candidateId).populate('visitedClinics');
+        if (!candidate) {
+            return res.status(404).json({ success: false, message: 'Candidate profile not found.' });
+        }
+
+        if (candidate.accountId || candidate.mergedInto) {
+            return res.status(400).json({ success: false, message: 'This profile is already linked or merged.' });
+        }
+
+        // Verify phone match
+        const { normalizeIndianPhone } = require('../utils/phone_helper');
+        const userNorm = normalizeIndianPhone(currentPatient.phone).normalized;
+        const candNorm = normalizeIndianPhone(candidate.phone).normalized;
+        if (userNorm !== candNorm) {
+            return res.status(403).json({ success: false, message: 'Candidate phone does not match account phone.' });
+        }
+
+        let isVerified = false;
+
+        if (verificationType === 'clinic_name') {
+            const queryNorm = verificationValue.toLowerCase().trim();
+            // Check if any visited clinic matches name
+            isVerified = (candidate.visitedClinics || []).some(c => {
+                const clinicName = (c.name || '').toLowerCase();
+                return clinicName.includes(queryNorm) || queryNorm.includes(clinicName);
+            });
+        } else if (verificationType === 'visit_date') {
+            // Check against lastVisit or appointment dates
+            const targetDateStr = new Date(verificationValue).toISOString().slice(0, 10);
+            
+            if (candidate.lastVisit && new Date(candidate.lastVisit).toISOString().slice(0, 10) === targetDateStr) {
+                isVerified = true;
+            } else if (candidate.appointments && candidate.appointments.length > 0) {
+                isVerified = candidate.appointments.some(app => 
+                    app.appointmentDate && new Date(app.appointmentDate).toISOString().slice(0, 10) === targetDateStr
+                );
+            }
+        }
+
+        if (!isVerified) {
+            return res.status(400).json({
+                success: false,
+                message: 'Verification details did not match clinic records. For patient safety, please verify with the clinic receptionist.'
+            });
+        }
+
+        // Verified! Link candidate to current account
+        candidate.accountId = currentPatient._id;
+        candidate.relationship = relationship || 'Family Member';
+        if (candidate.age && candidate.age < 18) {
+            candidate.isMinor = true;
+            candidate.guardianName = currentPatient.name;
+            candidate.guardianConsent = true;
+            candidate.guardianConsentAt = new Date();
+        }
+        await candidate.save();
+
+        // Log to MigrationAuditLog
+        try {
+            const MigrationAuditLog = require('../models/MigrationAuditLog');
+            await MigrationAuditLog.create({
+                migrationRunId: `user_claim_${Date.now()}`,
+                actionType: 'candidate_gated_link',
+                primaryPatientId: currentPatient._id,
+                secondaryPatientId: candidate._id,
+                phone: userNorm,
+                name: candidate.name,
+                details: {
+                    verificationType,
+                    verifiedAt: new Date()
+                }
+            });
+        } catch (auditErr) {
+            console.warn('⚠️ MigrationAuditLog error:', auditErr.message);
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Successfully linked ${candidate.name} to your family profiles.`,
+            member: {
+                _id: candidate._id,
+                name: candidate.name,
+                relationship: candidate.relationship,
+                age: candidate.age,
+                gender: candidate.gender,
+                isMinor: candidate.isMinor
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error claiming family candidate:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to verify and link family profile.' });
     }
 };

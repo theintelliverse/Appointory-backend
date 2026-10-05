@@ -38,9 +38,10 @@ const userSchema = mongoose.Schema({
     }
   ],
 
-  // Password Reset
+  // Password Reset & Session Revocation
   resetToken: { type: String, default: null },
   resetTokenExpiry: { type: Date, default: null },
+  tokenVersion: { type: Number, default: 0 }, // Incremented on password reset to invalidate active sessions
 
   // 🌐 Doctor SEO & Public Profile Management
   slug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
