@@ -43,7 +43,7 @@ exports.registerClinic = async (req, res) => {
                     maxAttempts: 5,
                     expiresAt: new Date(Date.now() + 600000) // 10 minutes
                 },
-                { upsert: true, new: true }
+                { upsert: true, returnDocument: 'after' }
             );
 
             // Send Email verification code
@@ -79,7 +79,7 @@ exports.registerClinic = async (req, res) => {
         }
 
         if (storedOtpDoc.attempts >= (storedOtpDoc.maxAttempts || 5)) {
-            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
             return res.status(400).json({ success: false, message: "Too many failed attempts. Verification codes have been invalidated. Please request new codes." });
         }
 
@@ -102,7 +102,7 @@ exports.registerClinic = async (req, res) => {
             storedOtpDoc.attempts = (storedOtpDoc.attempts || 0) + 1;
             const remaining = Math.max(0, (storedOtpDoc.maxAttempts || 5) - storedOtpDoc.attempts);
             if (remaining <= 0) {
-                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
                 return res.status(400).json({ success: false, message: "Too many failed verification attempts. Please request new codes." });
             }
             await storedOtpDoc.save();
@@ -278,9 +278,9 @@ exports.getMe = async (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
     try {
-        const { 
-            name, bio, education, experience, phoneNumber, profileImage, 
-            clinicLocation, clinicContact, slug, consultationFee, 
+        const {
+            name, bio, education, experience, phoneNumber, profileImage,
+            clinicLocation, clinicContact, slug, consultationFee,
             medicalLicenseNumber, seoTitle, seoDescription,
             publicListingConsent
         } = req.body;
@@ -303,7 +303,7 @@ exports.updateProfile = async (req, res) => {
 
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
         const updatePayload = {
-            name, bio, education, experience, phoneNumber, profileImage, 
+            name, bio, education, experience, phoneNumber, profileImage,
             clinicLocation, clinicContact,
             ...(formattedSlug && { slug: formattedSlug }),
             ...(consultationFee !== undefined && { consultationFee }),
@@ -323,7 +323,7 @@ exports.updateProfile = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.user.id,
             updatePayload,
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         ).select('-password');
 
         if (!updatedUser) return res.status(404).json({ message: "User not found" });

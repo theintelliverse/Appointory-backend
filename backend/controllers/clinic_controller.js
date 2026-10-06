@@ -170,7 +170,7 @@ exports.updateClinicSettings = async (req, res) => {
                         : ''
                 })
             },
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         );
 
         if (!updatedClinic) {
@@ -791,7 +791,7 @@ exports.updateDoctorSchedule = async (req, res) => {
         const updatedDoctor = await User.findOneAndUpdate(
             { _id: doctorId, clinicId, role: 'doctor' },
             { availableDays: cleanDays },
-            { new: true }
+            { returnDocument: 'after' }
         ).select('_id name specialization availableDays isAvailable');
 
         if (!updatedDoctor) {
@@ -1168,4 +1168,4 @@ exports.updateClinicSeo = async (req, res) => {
         console.error('❌ Error updating clinic SEO:', error);
         res.status(500).json({ success: false, message: error.message });
     }
-};
+};

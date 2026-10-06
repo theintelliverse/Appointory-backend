@@ -109,7 +109,7 @@ exports.getClinicConnections = async (req, res) => {
                 const workingDays = lab.workingDays && lab.workingDays.length
                     ? lab.workingDays.map(d => d.toLowerCase())
                     : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-                
+
                 const isWeeklyOff = !workingDays.includes(todayWeekday);
                 const holiday = leaveMap[lab._id.toString()];
 
@@ -306,9 +306,9 @@ exports.getLabTestRequests = async (req, res) => {
             notes: q.consultationNotes || '',
             queueId: q._id,
             status: q.currentStage === 'Lab-Pending' ? 'Pending' :
-                    q.currentStage === 'Lab-Processing' ? 'Processing' :
+                q.currentStage === 'Lab-Processing' ? 'Processing' :
                     q.currentStage === 'Lab-Completed' ? 'Completed' :
-                    q.currentStage === 'Lab-Rejected' ? 'Rejected' : 'Pending',
+                        q.currentStage === 'Lab-Rejected' ? 'Rejected' : 'Pending',
             createdAt: q.createdAt,
             updatedAt: q.updatedAt
         }));
@@ -400,12 +400,12 @@ exports.uploadReportForRequest = [
 
                 let targetPatient = null;
                 if (request.patientId) {
-                    try { targetPatient = await Patient.findById(request.patientId); } catch (_) {}
+                    try { targetPatient = await Patient.findById(request.patientId); } catch (_) { }
                 }
                 if (!targetPatient && request.queueId) {
                     const queueDoc = await Queue.findById(request.queueId);
                     if (queueDoc?.patientId) {
-                        try { targetPatient = await Patient.findById(queueDoc.patientId); } catch (_) {}
+                        try { targetPatient = await Patient.findById(queueDoc.patientId); } catch (_) { }
                     }
                 }
 
@@ -431,7 +431,7 @@ exports.uploadReportForRequest = [
                         documents: []
                     });
                 }
-                
+
                 const newDocuments = newReports.map(rep => ({
                     visitId: request.queueId || null,
                     title: rep.title,
@@ -440,7 +440,7 @@ exports.uploadReportForRequest = [
                     fileType: rep.fileType,
                     uploadedAt: rep.uploadedAt
                 }));
-                
+
                 targetPatient.documents.push(...newDocuments);
                 await targetPatient.save();
 
@@ -673,12 +673,12 @@ exports.getLabSettings = async (req, res) => {
     try {
         const labId = req.lab.id;
         const LabSettings = require('../models/LabSettings');
-        
+
         let settings = await LabSettings.findOne({ labId });
         if (!settings) {
             settings = await LabSettings.create({ labId });
         }
-        
+
         res.status(200).json({ success: true, data: settings });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -691,11 +691,11 @@ exports.updateLabSettings = async (req, res) => {
         const LabSettings = require('../models/LabSettings');
         const IndependentLab = require('../models/IndependentLab');
         const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName, slug, bio, availableTests, seoTitle, seoDescription, publicListingConsent } = req.body;
-        
+
         const settings = await LabSettings.findOneAndUpdate(
             { labId },
             { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName },
-            { new: true, upsert: true }
+            { returnDocument: 'after', upsert: true }
         );
 
         // Format slug if provided
@@ -734,7 +734,7 @@ exports.updateLabSettings = async (req, res) => {
         if (Object.keys(labUpdate).length > 0) {
             await IndependentLab.findByIdAndUpdate(labId, labUpdate);
         }
-        
+
         res.status(200).json({ success: true, message: 'Settings saved successfully.', data: settings });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -906,7 +906,7 @@ exports.updateLabSchedule = async (req, res) => {
         if (openingTime) updateData.openingTime = openingTime;
         if (closingTime) updateData.closingTime = closingTime;
 
-        const updated = await IndependentLab.findByIdAndUpdate(labId, updateData, { new: true })
+        const updated = await IndependentLab.findByIdAndUpdate(labId, updateData, { returnDocument: 'after' })
             .select('workingDays isAvailable liveUntilDate openingTime closingTime labName');
 
         if (!updated) {

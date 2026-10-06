@@ -44,7 +44,7 @@ exports.registerLab = async (req, res) => {
                     maxAttempts: 5,
                     expiresAt: new Date(Date.now() + 600000) // 10 minutes
                 },
-                { upsert: true, new: true }
+                { upsert: true, returnDocument: 'after' }
             );
 
             // Send Email verification code
@@ -80,7 +80,7 @@ exports.registerLab = async (req, res) => {
         }
 
         if (storedOtpDoc.attempts >= (storedOtpDoc.maxAttempts || 5)) {
-            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
             return res.status(400).json({ success: false, message: "Too many failed attempts. Verification codes have been invalidated. Please request new codes." });
         }
 
@@ -103,7 +103,7 @@ exports.registerLab = async (req, res) => {
             storedOtpDoc.attempts = (storedOtpDoc.attempts || 0) + 1;
             const remaining = Math.max(0, (storedOtpDoc.maxAttempts || 5) - storedOtpDoc.attempts);
             if (remaining <= 0) {
-                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
                 return res.status(400).json({ success: false, message: "Too many failed verification attempts. Please request new codes." });
             }
             await storedOtpDoc.save();
@@ -277,7 +277,7 @@ exports.updateLabProfile = async (req, res) => {
         const updated = await IndependentLab.findByIdAndUpdate(
             req.lab.id,
             updateData,
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         ).select('-password -resetToken -resetTokenExpiry');
 
         if (!updated) return res.status(404).json({ success: false, message: 'Lab not found.' });
@@ -389,7 +389,7 @@ exports.createLabInvoice = async (req, res) => {
 
         let targetPatient = null;
         if (patientId) {
-            try { targetPatient = await Patient.findById(patientId); } catch (_) {}
+            try { targetPatient = await Patient.findById(patientId); } catch (_) { }
         }
         if (!targetPatient && cleanPhone) {
             const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

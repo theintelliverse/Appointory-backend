@@ -109,14 +109,14 @@ exports.getAllStaff = async (req, res) => {
         const doctorIds = staffMembers.filter(s => s.role === 'doctor').map(s => s._id);
         const now = new Date();
         const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-        const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+        const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
 
         const todayLeaves = await Leave.find({
             clinicId,
             type: 'doctor_leave',
             doctorId: { $in: doctorIds },
             startDate: { $lte: todayEnd },
-            endDate:   { $gte: todayStart }
+            endDate: { $gte: todayStart }
         }).select('doctorId title');
 
         const leaveMap = {};
@@ -232,7 +232,7 @@ exports.getPatientFullProfile = async (req, res) => {
         if (patientId) {
             try {
                 patient = await Patient.findOne({ _id: patientId, mergedInto: null });
-            } catch (_) {}
+            } catch (_) { }
         }
 
         // 2️⃣ Priority: Fetch by exact name under phone if patientName provided
@@ -248,8 +248,8 @@ exports.getPatientFullProfile = async (req, res) => {
 
         // 3️⃣ Priority: Find primary account or direct phone match
         if (!patient && cleanPhone) {
-            patient = await Patient.findOne({ 
-                phone: new RegExp(cleanPhone + '$'), 
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
                 mergedInto: null,
                 $or: [{ isPrimaryAccount: true }, { accountId: null }]
             }) || await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
@@ -335,8 +335,8 @@ exports.lookupPatientFamily = async (req, res) => {
         }).sort({ createdAt: 1 });
 
         // 2. Identify primary account or base accounts
-        let primaryPatient = directMatches.find(p => p.isPrimaryAccount || (!p.accountId && p.relationship === 'Self')) 
-            || directMatches.find(p => !p.accountId) 
+        let primaryPatient = directMatches.find(p => p.isPrimaryAccount || (!p.accountId && p.relationship === 'Self'))
+            || directMatches.find(p => !p.accountId)
             || directMatches[0];
 
         let familyMembers = [];
@@ -577,7 +577,7 @@ exports.updatePatientVitals = async (req, res) => {
         const targetPatientId = req.body.patientId || vitals?.patientId;
         let patient = null;
         if (targetPatientId) {
-            try { patient = await Patient.findById(targetPatientId); } catch (_) {}
+            try { patient = await Patient.findById(targetPatientId); } catch (_) { }
         }
         if (!patient && phone) {
             const cleanPhone = phone.replace(/\D/g, '').slice(-10);
@@ -636,7 +636,7 @@ exports.archiveStaff = async (req, res) => {
         const user = await User.findByIdAndUpdate(staffId, {
             isActive: false,
             deletedAt: Date.now()
-        }, { new: true });
+        }, { returnDocument: 'after' });
 
         if (!user) return res.status(404).json({ message: "Staff not found" });
 
@@ -715,7 +715,7 @@ exports.createPrescription = async (req, res) => {
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
         let patient = null;
         if (targetPatientId) {
-            try { patient = await Patient.findById(targetPatientId); } catch (_) {}
+            try { patient = await Patient.findById(targetPatientId); } catch (_) { }
         }
         if (!patient && cleanPhone && patientName) {
             const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

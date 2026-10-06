@@ -41,11 +41,11 @@ const recalculateTargetRating = async (targetType, targetId) => {
 
     let targetEntity = null;
     if (targetType === 'doctor') {
-        targetEntity = await User.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { new: true });
+        targetEntity = await User.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { returnDocument: 'after' });
     } else if (targetType === 'clinic') {
-        targetEntity = await Clinic.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { new: true });
+        targetEntity = await Clinic.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { returnDocument: 'after' });
     } else if (targetType === 'lab') {
-        targetEntity = await IndependentLab.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { new: true });
+        targetEntity = await IndependentLab.findByIdAndUpdate(targetId, { rating: { score: avgScore, count: totalCount } }, { returnDocument: 'after' });
     }
 
     return { score: avgScore, count: totalCount };
@@ -431,9 +431,9 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ name: regex }, { specialization: regex }] } : {})
             })
-            .populate('clinicId', 'name')
-            .select('name specialization rating profileImage clinicId')
-            .limit(10);
+                .populate('clinicId', 'name')
+                .select('name specialization rating profileImage clinicId')
+                .limit(10);
         }
 
         if (type === 'all' || type === 'clinic') {
@@ -441,8 +441,8 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ name: regex }, { address: regex }] } : {})
             })
-            .select('name address rating logo')
-            .limit(10);
+                .select('name address rating logo')
+                .limit(10);
         }
 
         if (type === 'all' || type === 'lab') {
@@ -450,8 +450,8 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ labName: regex }, { address: regex }] } : {})
             })
-            .select('labName address rating logo')
-            .limit(10);
+                .select('labName address rating logo')
+                .limit(10);
         }
 
         const results = [

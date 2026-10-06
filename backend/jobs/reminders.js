@@ -129,7 +129,7 @@ async function process24hReminders() {
                 $or: [{ claimedAt: null }, { claimedAt: { $lt: tenMinutesAgo } }]
             },
             { $set: { claimedAt: new Date() }, $inc: { reminder24hAttempts: 1 } },
-            { new: true }
+            { returnDocument: 'after' }
         ).populate('doctorId clinicId');
 
         if (!appt) break;
@@ -250,7 +250,7 @@ async function process2hReminders() {
                 $or: [{ claimedAt: null }, { claimedAt: { $lt: tenMinutesAgo } }]
             },
             { $set: { claimedAt: new Date() }, $inc: { reminder2hAttempts: 1 } },
-            { new: true }
+            { returnDocument: 'after' }
         ).populate('doctorId clinicId');
 
         if (!appt) break;
