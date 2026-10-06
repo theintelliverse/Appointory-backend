@@ -8,12 +8,17 @@ try {
     // Ignore on older Node versions
 }
 
+const cleanString = (val) => (val || '').trim();
+const cleanPassword = (val) => (val || '').replace(/[\s"]/g, '').trim();
+
 // ✅ VALIDATION: Check if email service is configured (via Vercel HTTP service or direct SMTP)
 const validateEmailConfig = () => {
     if (process.env.EMAIL_SERVICE_URL) {
         return true;
     }
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    const user = cleanString(process.env.EMAIL_USER);
+    const pass = cleanPassword(process.env.EMAIL_PASS);
+    if (!user || !pass) {
         console.error('❌ EMAIL CONFIGURATION ERROR: Missing EMAIL_USER/EMAIL_PASS and EMAIL_SERVICE_URL in environment variables');
         return false;
     }
@@ -22,17 +27,20 @@ const validateEmailConfig = () => {
 
 // Create transporter (Using Gmail)
 const createTransporter = () => {
-    if (!validateEmailConfig()) {
-        throw new Error('Email service is not properly configured. Please set EMAIL_USER and EMAIL_PASS environment variables.');
+    const user = cleanString(process.env.EMAIL_USER);
+    const pass = cleanPassword(process.env.EMAIL_PASS);
+
+    if (!user || !pass) {
+        return null;
     }
 
     return nodemailer.createTransport({
         host: 'smtp.gmail.com',
-        port: 465,       // Use 587 for STARTTLS (more compatible in cloud environments)
-        secure: true,   // false for 587
+        port: 465,
+        secure: true,
         auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS,
+            user,
+            pass,
         },
         tls: {
             // Do not fail on invalid certs
@@ -62,11 +70,17 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
 
     console.log(`🔗 Sending email via Vercel email service to: ${mailOptions.to}`);
 
-    // If no custom SMTP config provided, forward the default environment credentials
-    const activeSmtpConfig = smtpConfig || ((process.env.EMAIL_USER && process.env.EMAIL_PASS) ? {
+    const user = cleanString(process.env.EMAIL_USER);
+    const pass = cleanPassword(process.env.EMAIL_PASS);
+
+    // If no custom SMTP config provided, forward the default environment credentials (cleaned!)
+    const activeSmtpConfig = smtpConfig || ((user && pass) ? {
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS
+            user,
+            pass
         }
     } : null);
 
@@ -110,9 +124,10 @@ const wrapTransporter = (transporterToWrap, smtpConfig = null) => {
             }
 
             // FALLBACK: direct SMTP transporter
-            if (transporterToWrap) {
+            const activeTransporter = transporterToWrap || transporter || createTransporter();
+            if (activeTransporter) {
                 console.log(`📤 Sending email via direct SMTP to: ${mailOptions.to}`);
-                return await transporterToWrap.sendMail(mailOptions);
+                return await activeTransporter.sendMail(mailOptions);
             }
 
             throw new Error('No email delivery method available. Set EMAIL_SERVICE_URL or configure SMTP credentials.');
@@ -137,6 +152,18 @@ const initializeEmailService = async () => {
             return;
         }
 
+        // Always instantiate direct SMTP transporter if credentials are present,
+        // so that fallback works even if EMAIL_SERVICE_URL fails!
+        const user = cleanString(process.env.EMAIL_USER);
+        const pass = cleanPassword(process.env.EMAIL_PASS);
+        if (user && pass) {
+            try {
+                transporter = createTransporter();
+            } catch (tErr) {
+                console.warn('⚠️ Direct SMTP transporter creation failed:', tErr.message);
+            }
+        }
+
         // PRIMARY: If Vercel HTTP relay is configured, mark ready immediately without blocking on SMTP ports
         if (process.env.EMAIL_SERVICE_URL) {
             console.log(`📧 Email service initialized via HTTP Relay: ${process.env.EMAIL_SERVICE_URL}`);
@@ -145,7 +172,12 @@ const initializeEmailService = async () => {
             return;
         }
 
-        transporter = createTransporter();
+        if (!transporter) {
+            console.log('⚠️ Email service disabled: Credentials not configured');
+            isInitializing = false;
+            return;
+        }
+
         console.log('📧 Initializing direct SMTP email service...');
 
         // Test direct connection with promise wrapper
@@ -188,7 +220,7 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
             const config = await SystemConfig.findOne();
             if (config && config.smtpUser && config.smtpPass) {
                 const decryptedPass = decrypt(config.smtpPass);
-                
+
                 const smtpConfig = {
                     host: config.smtpHost || 'smtp.gmail.com',
                     port: config.smtpPort || 587,
