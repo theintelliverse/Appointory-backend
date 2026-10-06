@@ -1,7 +1,8 @@
 const nodemailer = require('nodemailer');
 
-const cleanString = (val) => (val || '').trim();
-const cleanPassword = (val) => (val || '').replace(/[\s"]/g, '').trim();
+const cleanString = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
+const cleanPassword = (val) => (val || '').replace(/[\s"']/g, '').trim();
+const cleanSecret = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
 
 module.exports = async (req, res) => {
     // Enable CORS
@@ -22,11 +23,13 @@ module.exports = async (req, res) => {
         return res.status(405).json({ success: false, message: 'Method Not Allowed' });
     }
 
-    const { email, to, subject, html, attachments, smtpConfig } = req.body;
+    const { email, to, subject, html, attachments, smtpConfig } = req.body || {};
     const recipient = email || to;
-    const requestSecret = req.headers['x-email-service-secret'] || req.body.secret;
+    const rawRequestSecret = req.headers['x-email-service-secret'] || req.body?.secret;
 
-    const serviceSecret = process.env.EMAIL_SERVICE_SECRET;
+    const serviceSecret = cleanSecret(process.env.EMAIL_SERVICE_SECRET);
+    const requestSecret = cleanSecret(rawRequestSecret);
+
     if (serviceSecret && requestSecret !== serviceSecret) {
         return res.status(401).json({ success: false, message: 'Unauthorized. Invalid service secret.' });
     }
@@ -49,11 +52,15 @@ module.exports = async (req, res) => {
         return res.status(500).json({ success: false, message: 'SMTP credentials not configured on service or request.' });
     }
 
-    const isExplicit587 = smtpConfig?.port === 587;
+    const host = smtpConfig?.host || 'smtp.gmail.com';
+    const isExplicit587 = Number(smtpConfig?.port) === 587;
+    const port = smtpConfig?.port ? Number(smtpConfig.port) : (isExplicit587 ? 587 : 465);
+    const secure = smtpConfig?.secure !== undefined ? Boolean(smtpConfig.secure) : (port === 465);
+
     const transporterConfig = {
-        host: smtpConfig?.host || 'smtp.gmail.com',
-        port: smtpConfig?.port || (isExplicit587 ? 587 : 465),
-        secure: smtpConfig?.secure !== undefined ? smtpConfig.secure : !isExplicit587,
+        host,
+        port,
+        secure,
         auth: {
             user: authUser,
             pass: authPass
@@ -61,8 +68,8 @@ module.exports = async (req, res) => {
         tls: {
             rejectUnauthorized: false
         },
-        connectionTimeout: 10000,
-        socketTimeout: 10000
+        connectionTimeout: 12000,
+        socketTimeout: 12000
     };
 
     try {
