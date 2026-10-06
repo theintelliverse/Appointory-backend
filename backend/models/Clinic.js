@@ -53,6 +53,28 @@ const clinicSchema = mongoose.Schema({
     planId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan' }
   }],
 
+  city: { type: String, default: '', trim: true },
+  slugHistory: [{ type: String, lowercase: true, trim: true }],
+
+  // 🌐 SEO & Google Listing Model
+  seo: {
+    metaTitle: { type: String, maxlength: 70, default: '' },
+    metaDescription: { type: String, maxlength: 170, default: '' },
+    focusKeyword: { type: String, maxlength: 60, default: '' },
+    keywords: { type: [String], default: [] },
+    about: { type: String, maxlength: 2000, default: '' },
+    services: { type: [String], default: [] },
+    faqs: [{
+      q: { type: String, maxlength: 200 },
+      a: { type: String, maxlength: 1000 }
+    }],
+    ogImageUrl: { type: String, default: '' },
+    googleBusinessUrl: { type: String, default: '' },
+    noindex: { type: Boolean, default: false },
+    seoUpdatedAt: { type: Date },
+    seoUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+
   // 🌐 SEO & Public Profile Management
   slug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
   bio: { type: String, default: '' },
@@ -78,12 +100,98 @@ const clinicSchema = mongoose.Schema({
   accreditation: [{ type: String }],
   videoUrl: { type: String, default: '' },
   publicListingConsent: { type: Boolean, default: false },
+  publicListingConsentDate: { type: Date, default: null },
+  publicListingConsentIp: { type: String, default: '' },
+  publicListingConsentText: { type: String, default: '' },
   milestones: {
     profileCompletedAt: { type: Date, default: null },
     firstDoctorAddedAt: { type: Date, default: null },
     firstPatientAddedAt: { type: Date, default: null },
     firstAppointmentAt: { type: Date, default: null }
   }
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Virtual alias: publicConsent <-> publicListingConsent
+clinicSchema.virtual('publicConsent')
+  .get(function() { return this.publicListingConsent; })
+  .set(function(v) { this.publicListingConsent = Boolean(v); });
+
+// Helper to sanitize slug
+function slugify(text) {
+  return String(text || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// Pre-save hook: auto-generate slug and maintain slugHistory
+clinicSchema.pre('save', async function(next) {
+  try {
+    if (this.isModified('slug') && !this.isNew) {
+      const original = await this.constructor.findById(this._id).select('slug slugHistory');
+      if (original && original.slug && original.slug !== this.slug) {
+        if (!this.slugHistory) this.slugHistory = [];
+        if (!this.slugHistory.includes(original.slug)) {
+          this.slugHistory.push(original.slug);
+        }
+      }
+    }
+
+    if (!this.slug) {
+      const cityPart = this.city || (this.address ? this.address.split(',').pop().trim() : '');
+      const raw = `${this.name} ${cityPart}`.trim();
+      let generatedSlug = slugify(raw) || `clinic-${Date.now()}`;
+      
+      const existing = await this.constructor.findOne({ slug: generatedSlug, _id: { $ne: this._id } });
+      if (existing) {
+        generatedSlug = `${generatedSlug}-${this.clinicCode ? this.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
+      }
+      this.slug = generatedSlug;
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Render-time effective SEO defaults (never stored to DB)
+clinicSchema.methods.getEffectiveSeo = function() {
+  const seo = this.seo || {};
+  const name = this.name || 'Clinic';
+  const city = this.city || (this.address ? this.address.split(',').pop().trim() : '') || 'India';
+  const services = (seo.services && seo.services.length > 0) ? seo.services : (this.specialties || []);
+  const topServices = services.slice(0, 3).join(', ');
+
+  const defaultTitle = `${name} – ${city} | Book Appointment Online`.slice(0, 70);
+  const defaultDesc = `${name} in ${city}.${topServices ? ` Top services: ${topServices}.` : ''} Live token queue, no waiting room.`.slice(0, 170);
+  const defaultKeywords = Array.from(new Set([
+    name.toLowerCase(),
+    `clinic in ${city}`.toLowerCase(),
+    `doctor in ${city}`.toLowerCase(),
+    `book appointment ${city}`.toLowerCase(),
+    ...services.map(s => String(s).toLowerCase().trim())
+  ])).slice(0, 15);
+
+  return {
+    metaTitle: seo.metaTitle || defaultTitle,
+    metaDescription: seo.metaDescription || defaultDesc,
+    focusKeyword: seo.focusKeyword || '',
+    keywords: (seo.keywords && seo.keywords.length > 0) ? seo.keywords : defaultKeywords,
+    about: seo.about || this.bio || `Welcome to ${name}, a premier healthcare clinic in ${city} dedicated to wait-free clinical care.`,
+    services: services,
+    faqs: (seo.faqs && seo.faqs.length > 0) ? seo.faqs : [],
+    ogImageUrl: seo.ogImageUrl || '',
+    googleBusinessUrl: seo.googleBusinessUrl || '',
+    noindex: Boolean(seo.noindex),
+    isDefaultTitle: !seo.metaTitle,
+    isDefaultDescription: !seo.metaDescription
+  };
+};
 
 module.exports = mongoose.model('Clinic', clinicSchema);

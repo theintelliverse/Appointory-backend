@@ -614,7 +614,17 @@ exports.verifyRazorpayPayment = async (req, res) => {
             const shasum = crypto.createHmac('sha256', keySecret);
             shasum.update(`${razorpayOrderId}|${razorpayPaymentId}`);
             const digest = shasum.digest('hex');
-            if (digest !== razorpaySignature) {
+            
+            let isValidSig = false;
+            try {
+                const bufDigest = Buffer.from(digest, 'hex');
+                const bufSig = Buffer.from(razorpaySignature, 'hex');
+                isValidSig = bufDigest.length === bufSig.length && crypto.timingSafeEqual(bufDigest, bufSig);
+            } catch (_) {
+                isValidSig = false;
+            }
+
+            if (!isValidSig) {
                 payment.status = 'failed';
                 await payment.save();
                 return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });
@@ -622,11 +632,20 @@ exports.verifyRazorpayPayment = async (req, res) => {
         } else {
             const isMock = razorpayOrderId.startsWith('order_mock_') || !keySecret || keySecret === 'mock_secret';
             if (!isMock) {
-                // Verify signature
+                // Verify signature timing-safely
                 const shasum = crypto.createHmac('sha256', keySecret);
                 shasum.update(`${razorpayOrderId}|${razorpayPaymentId}`);
                 const digest = shasum.digest('hex');
-                if (digest !== razorpaySignature) {
+                let isValidSig = false;
+                try {
+                    const bufDigest = Buffer.from(digest, 'hex');
+                    const bufSig = Buffer.from(razorpaySignature, 'hex');
+                    isValidSig = bufDigest.length === bufSig.length && crypto.timingSafeEqual(bufDigest, bufSig);
+                } catch (_) {
+                    isValidSig = false;
+                }
+
+                if (!isValidSig) {
                     payment.status = 'failed';
                     await payment.save();
                     return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });

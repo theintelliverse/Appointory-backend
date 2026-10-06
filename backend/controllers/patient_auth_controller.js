@@ -7,6 +7,7 @@ const { normalizeIndianPhone } = require('../utils/phone_helper');
 const MedicalRecord = require('../models/MedicalRecord');
 const Otp = require('../models/Otp');
 const bcrypt = require('bcryptjs');
+const { generateSecureOtp, storeSecureOtp, verifyAndConsumeOtp } = require('../utils/otp_helper');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
@@ -52,15 +53,8 @@ exports.sendOTP = async (req, res) => {
             }
         }
 
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-        // Store with 5-minute expiry in MongoDB
-        await Otp.findOneAndUpdate(
-            { identifier: cleanPhone, type: 'patient_phone' },
-            { otp, expiresAt: new Date(Date.now() + 300000) },
-            { upsert: true, new: true }
-        );
-        console.log(`✅ OTP Generated for ${cleanPhone}: ${otp}`);
+        const otp = generateSecureOtp();
+        await storeSecureOtp({ identifier: cleanPhone, type: 'patient_phone', otp, expiryMinutes: 5 });
 
         const formattedPhone = `+91${cleanPhone}`;
 
@@ -68,13 +62,11 @@ exports.sendOTP = async (req, res) => {
         try {
             const client = getTwilioClient();
             if (!client || !process.env.TWILIO_PHONE_NUMBER) {
-                console.warn(`⚠️ Twilio credentials missing in environment. OTP for ${cleanPhone}: ${otp}`);
                 return res.status(200).json({
                     success: true,
                     message: process.env.NODE_ENV === 'development'
                         ? "OTP generated (Twilio not configured)."
-                        : "OTP service not configured.",
-                    debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+                        : "OTP service not configured."
                 });
             }
 
@@ -86,16 +78,14 @@ exports.sendOTP = async (req, res) => {
 
             res.status(200).json({
                 success: true,
-                message: "OTP sent successfully!",
-                debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+                message: "OTP sent successfully!"
             });
 
         } catch (smsError) {
             console.error("Twilio SMS Error:", smsError.message);
             res.status(500).json({
                 success: false,
-                message: "Failed to send SMS.",
-                debugOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+                message: "Failed to send SMS."
             });
         }
 
@@ -112,13 +102,17 @@ exports.verifyOTPForCheckin = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
+        
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanPhone,
+            type: 'patient_phone',
+            otp,
+            consume: true
+        });
 
-        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
-            return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+        if (!verifyResult.valid) {
+            return res.status(400).json({ success: false, message: verifyResult.message || "Invalid or expired OTP" });
         }
-
-        await Otp.deleteOne({ _id: record._id }); // Clear OTP after use
 
         res.status(200).json({
             success: true,
@@ -137,10 +131,16 @@ exports.validateOTP = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
 
-        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
-            return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanPhone,
+            type: ['patient_phone', 'password_reset'],
+            otp,
+            consume: false
+        });
+
+        if (!verifyResult.valid) {
+            return res.status(400).json({ success: false, message: verifyResult.message || "Invalid or expired OTP" });
         }
 
         res.status(200).json({
@@ -208,39 +208,19 @@ exports.verifyLockerOTP = async (req, res) => {
         }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanPhone,
+            type: 'patient_phone',
+            otp,
+            consume: true
+        });
 
-        // ✅ Check if OTP exists
-        if (!record) {
-            console.warn(`⚠️  No OTP found for phone: ${cleanPhone}`);
+        if (!verifyResult.valid) {
             return res.status(400).json({
                 success: false,
-                message: "OTP not found. Please request a new OTP."
+                message: verifyResult.message || "Invalid or expired OTP. Please request a new OTP."
             });
         }
-
-        // ✅ Check if OTP is correct
-        if (record.otp !== otp) {
-            console.warn(`⚠️  Invalid OTP attempt for phone: ${cleanPhone}`);
-            return res.status(400).json({
-                success: false,
-                message: "OTP is incorrect. Please try again."
-            });
-        }
-
-        // ✅ Check if OTP is expired
-        if (record.expiresAt < new Date()) {
-            await Otp.deleteOne({ _id: record._id });
-            console.warn(`⚠️  Expired OTP for phone: ${cleanPhone}`);
-            return res.status(400).json({
-                success: false,
-                message: "OTP has expired. Please request a new OTP."
-            });
-        }
-
-        // ✅ OTP is valid, delete it
-        await Otp.deleteOne({ _id: record._id });
-        console.log(`✅ OTP verified for phone: ${cleanPhone}`);
 
         const phoneRegex = new RegExp(cleanPhone + '$');
 
@@ -639,8 +619,7 @@ exports.bookAppointment = async (req, res) => {
             isEmergency: false
         });
 
-        // Add appointment to target patient record
-        bookingPatient.appointments.push({
+        const apptObj = {
             queueId: queueEntry._id,
             clinicId,
             clinicName: clinic.name,
@@ -648,9 +627,22 @@ exports.bookAppointment = async (req, res) => {
             doctorName: doctor.name,
             appointmentDate: parsedAppointmentDate,
             status: 'Scheduled'
-        });
+        };
 
+        // Add appointment to target patient record
+        if (!Array.isArray(bookingPatient.appointments)) {
+            bookingPatient.appointments = [];
+        }
+        bookingPatient.appointments.push(apptObj);
         await bookingPatient.save();
+
+        if (bookingPatient._id.toString() !== patient._id.toString()) {
+            if (!Array.isArray(patient.appointments)) {
+                patient.appointments = [];
+            }
+            patient.appointments.push(apptObj);
+            await patient.save();
+        }
 
         // Release slot hold if holdToken provided
         if (holdToken) {
@@ -690,6 +682,16 @@ exports.bookAppointment = async (req, res) => {
             console.error("❌ SMS Error - Patient Phone:", patient.phone, "Error:", smsError.message);
         }
 
+        // 📢 REAL-TIME SOCKET BROADCAST
+        if (req.io) {
+            req.io.to(clinicId.toString()).emit('newAppointment', queueEntry);
+            req.io.to(clinicId.toString()).emit('queueUpdated', { clinicId });
+            const patientCleanPhone = (patient.phone || '').replace(/\D/g, '').slice(-10);
+            if (patientCleanPhone) {
+                req.io.to(patientCleanPhone).emit('queueUpdate', queueEntry);
+            }
+        }
+
         res.status(201).json({
             success: true,
             isFirstAppointment,
@@ -713,26 +715,138 @@ exports.bookAppointment = async (req, res) => {
 };
 
 /**
- * 8️⃣ GET PATIENT APPOINTMENTS
+ * 8️⃣ GET PATIENT APPOINTMENTS (Unified Queue + Patient Records)
  */
 exports.getPatientAppointments = async (req, res) => {
     try {
-        const patientId = req.user?.id;
+        const patientId = req.user?.id || req.user?._id;
+        const rawPhone = req.user?.phone || '';
+        const cleanPhone = rawPhone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
 
-        const patient = await Patient.findById(patientId)
-            .populate('appointments.clinicId', 'name')
-            .populate('appointments.doctorId', 'name specialization');
-
-        if (!patient) {
-            return res.status(404).json({ success: false, message: "Patient not found" });
+        let patient = null;
+        if (patientId) {
+            try {
+                patient = await Patient.findById(patientId);
+            } catch (_) {}
+        }
+        if (!patient && phoneRegex) {
+            patient = await Patient.findOne({ phone: phoneRegex }).sort({ updatedAt: -1 });
+        }
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ phone: cleanPhone }).sort({ updatedAt: -1 });
         }
 
-        res.status(200).json({
+        // Fetch linked family members
+        let familyMembers = [];
+        if (patient) {
+            const primaryId = patient.accountId || (patient.isPrimaryAccount ? patient._id : patientId);
+            if (primaryId) {
+                try {
+                    familyMembers = await Patient.find({
+                        $or: [{ _id: primaryId }, { accountId: primaryId }],
+                        mergedInto: null
+                    });
+                } catch (_) {}
+            }
+        }
+
+        const patientIds = [
+            ...(patient ? [patient._id] : []),
+            ...familyMembers.map(m => m._id)
+        ];
+
+        const queryOr = [];
+        if (patientIds.length > 0) {
+            queryOr.push({ patientId: { $in: patientIds } });
+        }
+        if (phoneRegex) {
+            queryOr.push({ patientPhone: phoneRegex });
+        }
+        if (cleanPhone) {
+            queryOr.push({ patientPhone: cleanPhone });
+        }
+
+        const queueEntries = queryOr.length > 0
+            ? await Queue.find({ $or: queryOr })
+                .populate('clinicId', 'name address contactPhone clinicCode')
+                .populate('doctorId', 'name specialization education')
+                .sort({ appointmentDate: -1, createdAt: -1 })
+                .lean()
+            : [];
+
+        const patientDocAppointments = [];
+        if (patient && Array.isArray(patient.appointments)) {
+            patientDocAppointments.push(...patient.appointments);
+        }
+        familyMembers.forEach(mem => {
+            if (Array.isArray(mem.appointments)) {
+                patientDocAppointments.push(...mem.appointments);
+            }
+        });
+
+        const seenMap = new Map();
+        queueEntries.forEach(q => {
+            const key = q._id.toString();
+            seenMap.set(key, {
+                _id: q._id,
+                queueId: q._id,
+                clinicId: q.clinicId?._id || q.clinicId,
+                clinicName: q.clinicId?.name || 'Clinic Facility',
+                clinicAddress: q.clinicId?.address || '',
+                clinicPhone: q.clinicId?.contactPhone || '',
+                doctorId: q.doctorId?._id || q.doctorId,
+                doctorName: q.doctorId?.name || 'Doctor',
+                doctorSpecialization: q.doctorId?.specialization || '',
+                patientId: q.patientId,
+                patientName: q.patientName || patient?.name || 'Patient',
+                patientPhone: q.patientPhone || patient?.phone || '',
+                tokenNumber: q.tokenNumber || null,
+                appointmentDate: q.appointmentDate || q.createdAt,
+                status: q.status || (q.isApproved ? 'Scheduled' : 'Pending-Approval'),
+                isApproved: Boolean(q.isApproved),
+                visitType: q.visitType || 'Appointment',
+                reason: q.reason || '',
+                createdAt: q.createdAt
+            });
+        });
+
+        patientDocAppointments.forEach(item => {
+            const key = item.queueId ? item.queueId.toString() : (item._id ? item._id.toString() : null);
+            if (key && !seenMap.has(key)) {
+                seenMap.set(key, {
+                    _id: item._id || item.queueId,
+                    queueId: item.queueId || item._id,
+                    clinicId: item.clinicId?._id || item.clinicId,
+                    clinicName: item.clinicId?.name || item.clinicName || 'Clinic Facility',
+                    doctorId: item.doctorId?._id || item.doctorId,
+                    doctorName: item.doctorId?.name || item.doctorName || 'Doctor',
+                    doctorSpecialization: item.doctorId?.specialization || '',
+                    patientId: patient?._id,
+                    patientName: patient?.name || 'Patient',
+                    patientPhone: patient?.phone || '',
+                    tokenNumber: item.tokenNumber || null,
+                    appointmentDate: item.appointmentDate || item.createdAt,
+                    status: item.status || 'Scheduled',
+                    isApproved: true,
+                    visitType: 'Appointment',
+                    reason: item.reason || '',
+                    createdAt: item.createdAt || item.appointmentDate
+                });
+            }
+        });
+
+        const mergedAppointments = Array.from(seenMap.values()).sort(
+            (a, b) => new Date(b.appointmentDate || b.createdAt) - new Date(a.appointmentDate || a.createdAt)
+        );
+
+        return res.status(200).json({
             success: true,
-            data: patient.appointments
+            data: mergedAppointments
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error("❌ getPatientAppointments error:", error);
+        return res.status(500).json({ success: false, message: error.message });
     }
 };
 
@@ -757,26 +871,24 @@ exports.patientForgotPassword = async (req, res) => {
             return res.status(404).json({ success: false, message: "Patient not found with this phone number" });
         }
 
-        // Generate OTP and save to MongoDB
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        await Otp.findOneAndUpdate(
-            { identifier: cleanPhone, type: 'password_reset' },
-            { otp, expiresAt: new Date(Date.now() + 300000) },
-            { upsert: true, new: true }
-        );
+        // Generate OTP and save securely to MongoDB
+        const otp = generateSecureOtp();
+        await storeSecureOtp({ identifier: cleanPhone, type: 'password_reset', otp, expiryMinutes: 5 });
 
         const formattedPhone = `+91${cleanPhone}`;
 
         // Send OTP via SMS
-        try {
-            await client.messages.create({
-                body: `Your password reset OTP is: ${otp}. Valid for 5 minutes. Do not share this with anyone.`,
-                from: process.env.TWILIO_PHONE_NUMBER,
-                to: formattedPhone
-            });
-        } catch (smsError) {
-            console.error("SMS Error:", smsError.message);
-            return res.status(500).json({ success: false, message: "Failed to send OTP" });
+        const client = getTwilioClient();
+        if (client && process.env.TWILIO_PHONE_NUMBER) {
+            try {
+                await client.messages.create({
+                    body: `Your password reset OTP is: ${otp}. Valid for 5 minutes. Do not share this with anyone.`,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: formattedPhone
+                });
+            } catch (smsError) {
+                console.error("SMS Error in forgot password:", smsError.message);
+            }
         }
 
         res.status(200).json({
@@ -800,11 +912,15 @@ exports.patientResetPassword = async (req, res) => {
         }
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        const record = await Otp.findOne({ identifier: cleanPhone, type: 'password_reset' });
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanPhone,
+            type: 'password_reset',
+            otp,
+            consume: true
+        });
 
-        // Verify OTP
-        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
-            return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+        if (!verifyResult.valid) {
+            return res.status(400).json({ success: false, message: verifyResult.message || "Invalid or expired OTP" });
         }
 
         const phoneRegex = new RegExp(cleanPhone + '$');
@@ -827,8 +943,6 @@ exports.patientResetPassword = async (req, res) => {
         patient.passwordHash = hashedPassword;
         patient.tokenVersion = (patient.tokenVersion || 0) + 1;
         await patient.save();
-
-        await Otp.deleteOne({ _id: record._id });
 
         res.status(200).json({
             success: true,
@@ -884,6 +998,44 @@ exports.removeDocument = async (req, res) => {
             success: false,
             message: "Failed to remove document: " + error.message
         });
+    }
+};
+
+/**
+ * 🔍 CHECK IF PATIENT PHONE IS REGISTERED
+ */
+exports.checkPatientPhone = async (req, res) => {
+    try {
+        const { phone } = req.body;
+        if (!phone) {
+            return res.status(400).json({ success: false, message: "Phone number is required" });
+        }
+
+        const { isValid, normalized: cleanPhone, error: phoneError } = normalizeIndianPhone(phone);
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: phoneError || "Invalid phone number" });
+        }
+
+        const patient = await Patient.findOne({
+            phone: cleanPhone,
+            $or: [
+                { isPrimaryAccount: true },
+                { passwordHash: { $exists: true, $ne: null } }
+            ]
+        }) || await Patient.findOne({ phone: cleanPhone }).sort({ updatedAt: -1 });
+
+        const isRegistered = Boolean(patient && patient.passwordHash);
+
+        return res.status(200).json({
+            success: true,
+            cleanPhone,
+            isRegistered,
+            hasAccount: Boolean(patient),
+            name: patient?.name || null
+        });
+    } catch (error) {
+        console.error("Check Phone Error:", error);
+        return res.status(500).json({ success: false, message: "Server error checking phone number" });
     }
 };
 
@@ -994,17 +1146,20 @@ exports.registerWithOTPAndPassword = async (req, res) => {
             });
         }
 
-        // Verify OTP
-        const record = await Otp.findOne({ identifier: cleanPhone, type: 'patient_phone' });
-        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
+        // Verify OTP securely
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanPhone,
+            type: 'patient_phone',
+            otp,
+            consume: true
+        });
+
+        if (!verifyResult.valid) {
             return res.status(400).json({
                 success: false,
-                message: "Invalid or expired OTP"
+                message: verifyResult.message || "Invalid or expired OTP"
             });
         }
-
-        // Delete OTP after verification
-        await Otp.deleteOne({ _id: record._id });
 
         // Check if primary account already registered
         const existingPatient = await Patient.findOne({
@@ -1095,20 +1250,20 @@ exports.changePasswordWithOTP = async (req, res) => {
 
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
-        // Verify OTP
-        const record = await Otp.findOne({
+        // Verify OTP securely
+        const verifyResult = await verifyAndConsumeOtp({
             identifier: cleanPhone,
-            type: { $in: ['password_reset', 'patient_phone'] }
+            type: ['password_reset', 'patient_phone'],
+            otp,
+            consume: true
         });
-        if (!record || record.otp !== otp || record.expiresAt < new Date()) {
+
+        if (!verifyResult.valid) {
             return res.status(400).json({
                 success: false,
-                message: "Invalid or expired OTP"
+                message: verifyResult.message || "Invalid or expired OTP"
             });
         }
-
-        // Delete OTP after verification
-        await Otp.deleteOne({ _id: record._id });
 
         // Find patient
         const patient = await Patient.findOne({ phone: cleanPhone });
@@ -1119,11 +1274,11 @@ exports.changePasswordWithOTP = async (req, res) => {
             });
         }
 
-        // Validate password strength (at least 8 characters)
-        if (newPassword.length < 8) {
+        // Validate password strength (at least 6 characters)
+        if (newPassword.length < 6) {
             return res.status(400).json({
                 success: false,
-                message: "Password must be at least 8 characters long for security."
+                message: "Password must be at least 6 characters long for security."
             });
         }
 
@@ -1145,6 +1300,153 @@ exports.changePasswordWithOTP = async (req, res) => {
             success: false,
             message: "Failed to change password: " + error.message
         });
+    }
+};
+
+/**
+ * 📱 SEND OTP TO NEW PHONE NUMBER FOR PHONE CHANGE
+ */
+exports.sendChangePhoneOTP = async (req, res) => {
+    try {
+        const { newPhone } = req.body;
+        const patientId = req.user?.id || req.user?._id;
+
+        if (!newPhone) {
+            return res.status(400).json({ success: false, message: "New mobile number is required" });
+        }
+
+        const { isValid, normalized: cleanNewPhone, error: phoneError } = normalizeIndianPhone(newPhone);
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: phoneError || "Invalid mobile number" });
+        }
+
+        // Check if user is trying to change to the same number
+        const currentPatient = await Patient.findById(patientId);
+        if (currentPatient && currentPatient.phone === cleanNewPhone) {
+            return res.status(400).json({
+                success: false,
+                message: "The new phone number is identical to your current phone number."
+            });
+        }
+
+        // Check if another primary account already uses this phone
+        const existingPrimary = await Patient.findOne({
+            phone: cleanNewPhone,
+            isPrimaryAccount: true,
+            _id: { $ne: patientId }
+        });
+
+        if (existingPrimary) {
+            return res.status(400).json({
+                success: false,
+                message: "This mobile number is already linked to another registered account."
+            });
+        }
+
+        // Generate 6-digit OTP securely
+        const otp = generateSecureOtp();
+        await storeSecureOtp({
+            identifier: cleanNewPhone,
+            type: 'patient_change_phone',
+            otp,
+            expiryMinutes: 5
+        });
+
+        const client = getTwilioClient();
+        if (client && process.env.TWILIO_PHONE_NUMBER) {
+            try {
+                await client.messages.create({
+                    body: `Your Appointory phone number update OTP is: ${otp}. Valid for 5 minutes.`,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: `+91${cleanNewPhone}`
+                });
+            } catch (smsError) {
+                console.error("SMS Error:", smsError.message);
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `OTP sent successfully to +91 ${cleanNewPhone}`
+        });
+    } catch (error) {
+        console.error("Send Change Phone OTP Error:", error);
+        return res.status(500).json({ success: false, message: "Failed to send OTP to new number" });
+    }
+};
+
+/**
+ * 📱 VERIFY OTP AND UPDATE PHONE NUMBER
+ */
+exports.verifyChangePhone = async (req, res) => {
+    try {
+        const { newPhone, otp } = req.body;
+        const patientId = req.user?.id || req.user?._id;
+
+        if (!newPhone || !otp) {
+            return res.status(400).json({ success: false, message: "New mobile number and OTP are required" });
+        }
+
+        const { isValid, normalized: cleanNewPhone } = normalizeIndianPhone(newPhone);
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: "Invalid mobile number" });
+        }
+
+        // Verify OTP securely
+        const verifyResult = await verifyAndConsumeOtp({
+            identifier: cleanNewPhone,
+            type: 'patient_change_phone',
+            otp,
+            consume: true
+        });
+
+        if (!verifyResult.valid) {
+            return res.status(400).json({
+                success: false,
+                message: verifyResult.message || "Invalid or expired OTP. Please request a new one."
+            });
+        }
+
+        // Update patient document
+        const patient = await Patient.findById(patientId);
+        if (!patient) {
+            return res.status(404).json({ success: false, message: "Patient profile not found" });
+        }
+
+        patient.phone = cleanNewPhone;
+        patient.tokenVersion = (patient.tokenVersion || 0) + 1;
+        await patient.save();
+
+        // Also update any dependent family members if linked
+        await Patient.updateMany(
+            { accountId: patient._id },
+            { $set: { updatedAt: new Date() } }
+        );
+
+        // Generate updated session token
+        const newToken = generateToken({
+            id: patient._id.toString(),
+            phone: cleanNewPhone,
+            role: 'patient',
+            tokenVersion: patient.tokenVersion
+        });
+
+        console.log(`✅ Patient Phone Updated: ${patient.name} -> ${cleanNewPhone}`);
+
+        return res.status(200).json({
+            success: true,
+            message: "Phone number updated successfully!",
+            newPhone: cleanNewPhone,
+            token: newToken,
+            patient: {
+                id: patient._id,
+                name: patient.name,
+                phone: cleanNewPhone
+            }
+        });
+    } catch (error) {
+        console.error("Verify Change Phone Error:", error);
+        return res.status(500).json({ success: false, message: "Failed to update phone number" });
     }
 };
 

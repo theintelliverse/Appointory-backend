@@ -168,6 +168,16 @@ const corsOptions = {
     optionsSuccessStatus: 200
 };
 
+// 🔒 PRODUCTION SECRET INTEGRITY CHECK
+if (process.env.NODE_ENV === 'production') {
+    const weakSecrets = ['secret', 'jwtsecret', '123456', 'your_jwt_secret', 'changeme', 'appointory_secret', 'swasthyamitra_secret', 'test'];
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32 || weakSecrets.includes(secret.toLowerCase())) {
+        console.error('❌ FATAL SECURITY ERROR: JWT_SECRET is missing, shorter than 32 characters, or set to an insecure default in production.');
+        process.exit(1);
+    }
+}
+
 // 🛠️ Initialize Socket.io
 if (!isVercel) {
     server = http.createServer(app); // 🔑 Create HTTP server
@@ -183,29 +193,83 @@ if (!isVercel) {
         }
     });
 
-    io.on('connection', (socket) => {
-        console.log('⚡ Client Connected:', socket.id);
+    // 🔐 Socket Authentication Middleware
+    io.use((socket, next) => {
+        const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+        if (token) {
+            try {
+                const cleanToken = token.startsWith('Bearer ') ? token.slice(7) : token;
+                const decoded = jwt.verify(cleanToken, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+                socket.user = decoded;
+            } catch (err) {
+                // Invalid token provided: mark unauthorized
+                socket.authError = 'Invalid or expired token';
+            }
+        }
+        next();
+    });
 
+    io.on('connection', (socket) => {
+        console.log('⚡ Client Connected:', socket.id, socket.user ? `(User: ${socket.user.id}, Role: ${socket.user.role})` : '(Anonymous)');
+
+        // 🏥 Join Clinic Room (Tenant-isolated for staff, public-isolated for TV display)
         socket.on('joinClinic', (clinicId) => {
             if (!clinicId) {
                 console.error(`❌ Socket ${socket.id} tried to join an undefined room!`);
                 return;
             }
-            socket.join(clinicId.toString());
-            console.log(`🏥 Socket ${socket.id} successfully joined Room: ${clinicId}`);
 
-            // Let the client know they joined successfully
-            socket.emit('joined', { room: clinicId });
+            const targetClinicId = clinicId.toString();
+
+            // If unauthenticated, allow ONLY public TV display room (no private invoice/patient events)
+            if (!socket.user) {
+                const publicRoom = `tv_${targetClinicId}`;
+                socket.join(publicRoom);
+                console.log(`📺 Anonymous socket ${socket.id} joined public TV room: ${publicRoom}`);
+                socket.emit('joined', { room: publicRoom, isPublic: true });
+                return;
+            }
+
+            // If authenticated as staff, enforce tenant authorization
+            const userClinicId = socket.user.clinicId ? socket.user.clinicId.toString() : null;
+            const isSuperAdmin = socket.user.role === 'superadmin';
+
+            if (isSuperAdmin || userClinicId === targetClinicId) {
+                socket.join(targetClinicId);
+                console.log(`🏥 Authenticated staff socket ${socket.id} joined Clinic Room: ${targetClinicId}`);
+                socket.emit('joined', { room: targetClinicId, isPublic: false });
+            } else {
+                console.warn(`🚨 Blocked cross-tenant socket join! User ${socket.user.id} tried joining clinic ${targetClinicId}`);
+                socket.emit('error', { message: 'Unauthorized: Cross-clinic room access forbidden.' });
+            }
         });
 
+        // 🔬 Join Lab Room (Authorized for lab staff and connected clinics only)
         socket.on('joinLab', (labId) => {
             if (!labId) {
                 console.error(`❌ Socket ${socket.id} tried to join an undefined lab room!`);
                 return;
             }
-            socket.join(`lab_${labId}`);
-            console.log(`🔬 Socket ${socket.id} successfully joined Lab Room: lab_${labId}`);
-            socket.emit('joined', { room: `lab_${labId}` });
+
+            if (!socket.user) {
+                socket.emit('error', { message: 'Authentication required to join lab room.' });
+                return;
+            }
+
+            const targetLabRoom = `lab_${labId}`;
+            const userLabId = socket.user.labId ? socket.user.labId.toString() : null;
+            const isSuperAdmin = socket.user.role === 'superadmin';
+            const isAuthorizedLab = socket.user.role === 'independent_lab' && userLabId === labId.toString();
+            const isInHouseLab = socket.user.role === 'lab' || socket.user.role === 'doctor' || socket.user.role === 'admin';
+
+            if (isSuperAdmin || isAuthorizedLab || isInHouseLab) {
+                socket.join(targetLabRoom);
+                console.log(`🔬 Socket ${socket.id} joined Lab Room: ${targetLabRoom}`);
+                socket.emit('joined', { room: targetLabRoom });
+            } else {
+                console.warn(`🚨 Blocked unauthorized lab room join! User: ${socket.user.id}`);
+                socket.emit('error', { message: 'Unauthorized: Access to this lab room is forbidden.' });
+            }
         });
 
         socket.on('disconnect', () => {
@@ -220,11 +284,14 @@ app.use((req, res, next) => {
     next();
 });
 
+const sanitizeMongo = require('./middlewares/mongo_sanitize');
+
 app.set('trust proxy', 1);
 app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
+app.use(sanitizeMongo);
 app.use('/api', globalApiLimiter);
 
 // 🔒 Block search crawlers from indexing private API endpoints
@@ -276,9 +343,11 @@ const { checkMaintenanceMode, checkSubscription } = require('./utils/auth_middle
 // Routes
 app.use(checkMaintenanceMode);
 
-// 🌐 Public SEO & AI Search Endpoints
-app.get('/sitemap.xml', publicSeoController.generateSitemapXml);
-app.get('/robots.txt', publicSeoController.generateRobotsTxt);
+// 🌐 Public SSR Clinic & Directory Routes, Dynamic Sitemap, and Robots.txt
+const seoRoutes = require('./routes/seoRoutes');
+app.use('/', seoRoutes);
+
+// 🌐 Public AI Search & LLM Context Endpoints
 app.get('/llms.txt', publicSeoController.generateLlmTxt);
 app.get('/llms-full.txt', publicSeoController.generateLlmTxt);
 app.get('/ai.txt', publicSeoController.generateLlmTxt);
@@ -320,10 +389,18 @@ app.get('/', (req, res) => {
 // Error Handler
 app.use((err, req, res, next) => {
     console.error('❌ GLOBAL ERROR:', err.message);
-    console.error(err.stack);
-    res.status(err.status || 500).json({
+    if (process.env.NODE_ENV !== 'production' && err.stack) {
+        console.error(err.stack);
+    }
+    const isProd = process.env.NODE_ENV === 'production';
+    const statusCode = err.status || err.statusCode || 500;
+    const clientMessage = (isProd && statusCode >= 500)
+        ? 'Internal Server Error'
+        : (err.message || 'An unexpected error occurred');
+
+    res.status(statusCode).json({
         success: false,
-        message: err.message || 'Internal Server Error'
+        message: clientMessage
     });
 });
 

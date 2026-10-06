@@ -8,9 +8,8 @@ const labAuthController = require('../controllers/independent_lab_controller');
 
 // 🔑 Multer + Cloudinary Setup for patient document uploads
 const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
-const CloudinaryStoragePkg = require('multer-storage-cloudinary');
-const CloudinaryStorage = CloudinaryStoragePkg.CloudinaryStorage || CloudinaryStoragePkg;
+const cloudinaryBase = require('cloudinary');
+const cloudinary = cloudinaryBase.v2 || cloudinaryBase;
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_NAME,
@@ -18,18 +17,36 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+if (!cloudinary.v2) cloudinary.v2 = cloudinary;
+if (!cloudinaryBase.v2) cloudinaryBase.v2 = cloudinary;
+
+const CloudinaryStoragePkg = require('multer-storage-cloudinary');
+const CloudinaryStorage = CloudinaryStoragePkg.CloudinaryStorage || CloudinaryStoragePkg;
+
 const cloudinaryStorage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-        folder: 'swasthya_mitra/patient_documents',
-        allowed_formats: ['jpg', 'jpeg', 'png', 'pdf', 'webp'],
-        resource_type: 'auto'
+    cloudinary: cloudinaryBase,
+    params: async (req, file) => {
+        const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
+        return {
+            folder: 'swasthya_mitra/patient_documents',
+            resource_type: isPdf ? 'raw' : 'auto',
+            public_id: `patient-doc-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+        };
     }
 });
 
 const upload = multer({ 
     storage: cloudinaryStorage,
-    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'application/pdf'];
+        const isExtMatch = Boolean(file.originalname.match(/\.(jpg|jpeg|png|webp|pdf)$/i));
+        if (allowedMimes.includes(file.mimetype) || isExtMatch) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file format. Please upload JPG, PNG, WEBP, or PDF files.'));
+        }
+    }
 });
 
 /**
@@ -58,6 +75,7 @@ router.post('/patient/register', patientController.registerPatient);
 router.post('/patient/forgot-password', patientController.patientForgotPassword);
 router.post('/patient/reset-password', patientController.patientResetPassword);
 // 🆕 PASSWORD-BASED AUTHENTICATION ROUTES
+router.post('/patient/check-phone', patientController.checkPatientPhone);
 router.post('/patient/login-with-password', patientController.patientLoginWithPassword);
 router.post('/patient/register-with-otp-password', patientController.registerWithOTPAndPassword);
 router.post('/patient/change-password-with-otp', patientController.changePasswordWithOTP);
@@ -68,10 +86,13 @@ router.get('/queue/public/status/:queueId', patientController.getPublicQueueStat
  */
 router.get('/patient/profile', protectPatient, getPatientProfile);
 router.patch('/patient/update-profile', protectPatient, require('../controllers/patient_profile_controller').updatePatientProfile);
+router.post('/patient/send-change-phone-otp', protectPatient, patientController.sendChangePhoneOTP);
+router.post('/patient/verify-change-phone', protectPatient, patientController.verifyChangePhone);
 router.post('/patient/book-appointment', protectPatient, patientController.bookAppointment);
 router.get('/patient/appointments', protectPatient, patientController.getPatientAppointments);
 router.get('/patient/invoices', protectPatient, require('../controllers/billing_controller').getPatientInvoices);
 router.delete('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
+router.post('/patient/remove-document/:documentId', protectPatient, patientController.removeDocument);
 
 // 👨‍👩‍👧‍👦 SAVED FAMILY PROFILES (PROTECTED)
 router.get('/patient/family-members', protectPatient, patientController.getFamilyMembers);

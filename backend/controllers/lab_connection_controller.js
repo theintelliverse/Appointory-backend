@@ -444,6 +444,11 @@ exports.uploadReportForRequest = [
                 targetPatient.documents.push(...newDocuments);
                 await targetPatient.save();
 
+                if (!request.patientId && targetPatient?._id) {
+                    request.patientId = targetPatient._id;
+                    await request.save();
+                }
+
                 if (request.queueId) {
                     const Queue = require('../models/Queue');
                     await Queue.findByIdAndUpdate(request.queueId, { currentStage: 'Lab-Completed' });
@@ -685,7 +690,7 @@ exports.updateLabSettings = async (req, res) => {
         const labId = req.lab.id;
         const LabSettings = require('../models/LabSettings');
         const IndependentLab = require('../models/IndependentLab');
-        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName, slug, bio, availableTests, seoTitle, seoDescription } = req.body;
+        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName, slug, bio, availableTests, seoTitle, seoDescription, publicListingConsent } = req.body;
         
         const settings = await LabSettings.findOneAndUpdate(
             { labId },
@@ -710,12 +715,21 @@ exports.updateLabSettings = async (req, res) => {
         }
 
         // Also sync profile and test catalog to IndependentLab model
+        const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
         const labUpdate = {};
         if (formattedSlug) labUpdate.slug = formattedSlug;
         if (bio !== undefined) labUpdate.bio = bio;
         if (Array.isArray(availableTests)) labUpdate.availableTests = availableTests;
         if (seoTitle !== undefined) labUpdate.seoTitle = seoTitle;
         if (seoDescription !== undefined) labUpdate.seoDescription = seoDescription;
+        if (publicListingConsent !== undefined) {
+            labUpdate.publicListingConsent = Boolean(publicListingConsent);
+            labUpdate.publicListingConsentDate = publicListingConsent ? new Date() : null;
+            labUpdate.publicListingConsentIp = clientIp;
+            labUpdate.publicListingConsentText = publicListingConsent
+                ? 'I hereby grant explicit written/digital consent to list and display our diagnostic laboratory profile, test catalog, and operational schedule on the Appointory public directory in compliance with India’s DPDP Act 2023.'
+                : '';
+        }
 
         if (Object.keys(labUpdate).length > 0) {
             await IndependentLab.findByIdAndUpdate(labId, labUpdate);

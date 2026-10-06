@@ -295,6 +295,11 @@ exports.uploadLabReport = async (req, res) => {
             console.error("❌ [3] Error: Queue session not found.");
             return res.status(404).json({ success: false, message: "Queue session not found." });
         }
+
+        if (req.user.role !== 'superadmin' && queueEntry.clinicId.toString() !== req.user.clinicId.toString()) {
+            console.error("🚨 Unauthorized cross-clinic lab upload attempted by user:", req.user.id);
+            return res.status(403).json({ success: false, message: "Unauthorized. Cross-clinic report upload forbidden." });
+        }
         console.log("✅ [3] Queue Entry Found:", queueEntry.patientName);
 
         // 🔍 Resolve SPECIFIC target patient for this queue entry

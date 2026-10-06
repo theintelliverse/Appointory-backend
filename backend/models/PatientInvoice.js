@@ -11,6 +11,11 @@ const patientInvoiceSchema = mongoose.Schema({
     ref: 'Clinic', 
     required: true 
   },
+  patientId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Patient',
+    default: null
+  },
   patientName: { 
     type: String, 
     required: true 
@@ -90,5 +95,8 @@ const patientInvoiceSchema = mongoose.Schema({
     default: Date.now 
   }
 }, { timestamps: true });
+
+patientInvoiceSchema.index({ patientId: 1 });
+patientInvoiceSchema.index({ clinicId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('PatientInvoice', patientInvoiceSchema);

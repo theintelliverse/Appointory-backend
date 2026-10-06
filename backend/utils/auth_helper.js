@@ -13,7 +13,7 @@ const generateToken = (user) => {
             tokenVersion: user.tokenVersion || 0
         }, 
         process.env.JWT_SECRET, 
-        { expiresIn: '24h' }
+        { expiresIn: '24h', algorithm: 'HS256' }
     );
 };
 

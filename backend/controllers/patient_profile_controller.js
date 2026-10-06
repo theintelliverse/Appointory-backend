@@ -48,16 +48,20 @@ exports.getPatientProfile = async (req, res) => {
             lockerProfiles.unshift(patientDoc);
         }
 
-        // Fallback for mixed formatting: normalize digits and match by last 10.
+        // Fallback for mixed formatting: query standard Indian phone variants with indexed query
         if (cleanPhone && (!lockerProfiles || lockerProfiles.length === 0)) {
-            const allProfiles = await Patient.find({ phone: { $exists: true, $ne: null } })
+            const phoneVariants = [
+                cleanPhone,
+                `+91${cleanPhone}`,
+                `91${cleanPhone}`,
+                `0${cleanPhone}`,
+                `+91 ${cleanPhone}`,
+                `+91-${cleanPhone}`
+            ];
+            lockerProfiles = await Patient.find({ phone: { $in: phoneVariants } })
                 .select('name phone age gender bloodGroup email address allergies dob documents vitals updatedAt')
-                .sort({ updatedAt: -1 });
-
-            lockerProfiles = allProfiles.filter((profile) => {
-                const normalized = String(profile.phone || '').replace(/\D/g, '').slice(-10);
-                return normalized === cleanPhone;
-            });
+                .sort({ updatedAt: -1 })
+                .limit(20);
         }
 
         // Determine target patient profile (supports switching between family members via ?memberId=...)
@@ -77,7 +81,22 @@ exports.getPatientProfile = async (req, res) => {
         }
 
         if (!targetPatient) {
-            targetPatient = patientDoc || lockerProfiles?.[0] || null;
+            // 1. Prioritize primary account
+            const primaryInLocker = (lockerProfiles || []).find(p => p.isPrimaryAccount);
+            // 2. Prioritize profile with a genuine non-generic name (not 'Patient', not 'Valued Patient')
+            const nonGenericNameProfile = (lockerProfiles || []).find(p => 
+                p.name && 
+                p.name.trim().toLowerCase() !== 'patient' && 
+                p.name.trim().toLowerCase() !== 'valued patient'
+            );
+
+            targetPatient = (patientDoc?.isPrimaryAccount ? patientDoc : null)
+                || primaryInLocker
+                || (patientDoc?.name && patientDoc.name.trim().toLowerCase() !== 'patient' && patientDoc.name.trim().toLowerCase() !== 'valued patient' ? patientDoc : null)
+                || nonGenericNameProfile
+                || patientDoc
+                || lockerProfiles?.[0]
+                || null;
         }
 
         if (!targetPatient) {
@@ -99,7 +118,7 @@ exports.getPatientProfile = async (req, res) => {
 
         // 🧩 Filter visits specifically for the active patient (by patientId or patientName)
         const targetPatientNameLower = (targetPatient.name || '').trim().toLowerCase();
-        const matchedVisits = (visitHistory || []).filter(visit => {
+        const matchedVisits = (regexMatchedVisits || []).filter(visit => {
             if (visit.patientId && targetPatient._id) {
                 return visit.patientId.toString() === targetPatient._id.toString();
             }
@@ -195,9 +214,29 @@ exports.getPatientProfile = async (req, res) => {
             return true;
         });
 
+        // Resolve genuine name if targetPatient has generic 'Patient' or 'Valued Patient'
+        let finalPatientName = targetPatient.name;
+        const isGenericName = !finalPatientName || 
+            finalPatientName.trim().toLowerCase() === 'patient' || 
+            finalPatientName.trim().toLowerCase() === 'valued patient';
+
+        if (isGenericName) {
+            const betterProfile = (lockerProfiles || []).find(p => 
+                p.name && 
+                p.name.trim().toLowerCase() !== 'patient' && 
+                p.name.trim().toLowerCase() !== 'valued patient'
+            );
+            if (betterProfile?.name) {
+                finalPatientName = betterProfile.name.trim();
+                // Auto-heal current document in DB so future queries return the real name immediately
+                targetPatient.name = finalPatientName;
+                targetPatient.save().catch(() => {});
+            }
+        }
+
         const responseData = {
             _id: targetPatient._id,
-            name: targetPatient.name || "Valued Patient",
+            name: finalPatientName || "Valued Patient",
             phone: targetPatient.phone || cleanPhone || req.user.phone,
             relationship: targetPatient.relationship || 'Self',
             isPrimaryAccount: Boolean(targetPatient.isPrimaryAccount),
@@ -242,29 +281,38 @@ exports.getPatientProfile = async (req, res) => {
  */
 exports.updatePatientProfile = async (req, res) => {
     try {
-        const { name, age, gender, bloodGroup, bio, email, address, allergies, dob } = req.body;
+        const { name, age, gender, bloodGroup, bio, email, address, allergies, dob, patientId: reqPatientId, memberId } = req.body;
         
-        // Find patient by ID or Phone (from token)
-        const patientId = req.user.id || req.user._id;
+        // Find patient by target ID, token ID, or Phone
+        const targetId = reqPatientId || memberId;
+        const authId = req.user.id || req.user._id;
         const rawPhone = req.user.phone || '';
         const cleanPhone = rawPhone.replace(/\D/g, '').slice(-10);
         const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
 
         let patient = null;
-        if (patientId) {
+        if (targetId) {
             try {
-                patient = await Patient.findById(patientId);
+                patient = await Patient.findById(targetId);
+            } catch (e) {
+                console.warn("Could not find patient by targetId:", e.message);
+            }
+        }
+
+        if (!patient && authId) {
+            try {
+                patient = await Patient.findById(authId);
             } catch (e) {
                 console.warn("Could not find patient by ObjectId:", e.message);
             }
         }
 
         if (!patient && phoneRegex) {
-            patient = await Patient.findOne({ phone: phoneRegex });
+            patient = await Patient.findOne({ phone: phoneRegex }).sort({ updatedAt: -1 });
         }
 
         if (!patient && cleanPhone) {
-            patient = await Patient.findOne({ phone: cleanPhone });
+            patient = await Patient.findOne({ phone: cleanPhone }).sort({ updatedAt: -1 });
         }
 
         if (!patient) {
@@ -275,16 +323,24 @@ exports.updatePatientProfile = async (req, res) => {
             });
         }
 
-        // Update fields
-        if (name !== undefined) patient.name = name;
-        if (age !== undefined) patient.age = age ? parseInt(age) : null;
-        if (gender !== undefined) patient.gender = gender;
-        if (bloodGroup !== undefined) patient.bloodGroup = bloodGroup;
+        // Update fields safely
+        if (name !== undefined) patient.name = name.trim();
+        if (age !== undefined) {
+            const parsedAge = (age !== null && age !== '' && !isNaN(Number(age))) ? parseInt(age, 10) : null;
+            patient.age = parsedAge;
+            if (parsedAge) {
+                patient.yearOfBirth = new Date().getFullYear() - parsedAge;
+            }
+        }
+        if (gender !== undefined) {
+            patient.gender = ['Male', 'Female', 'Other'].includes(gender) ? gender : undefined;
+        }
+        if (bloodGroup !== undefined) patient.bloodGroup = bloodGroup ? bloodGroup.trim() : null;
         if (bio !== undefined) patient.bio = bio;
-        if (email !== undefined) patient.email = email;
-        if (address !== undefined) patient.address = address;
-        if (allergies !== undefined) patient.allergies = allergies;
-        if (dob !== undefined) patient.dob = dob;
+        if (email !== undefined) patient.email = email ? email.trim() : '';
+        if (address !== undefined) patient.address = address ? address.trim() : '';
+        if (allergies !== undefined) patient.allergies = allergies ? allergies.trim() : '';
+        if (dob !== undefined) patient.dob = dob ? new Date(dob) : null;
 
         await patient.save();
 
@@ -322,8 +378,9 @@ exports.updatePatientProfile = async (req, res) => {
  */
 exports.uploadDocument = async (req, res) => {
     try {
-        const patientId = req.user.id;
-        const cleanPhone = req.user.phone ? req.user.phone.replace(/\D/g, '').slice(-10) : '';
+        const patientId = req.user.id || req.user._id;
+        const rawPhone = req.user.phone || '';
+        const cleanPhone = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
         const phoneRegex = cleanPhone ? new RegExp(cleanPhone + '$') : null;
         const targetMemberId = req.body.memberId || req.body.patientId;
 
@@ -335,13 +392,25 @@ exports.uploadDocument = async (req, res) => {
                     $or: [{ _id: patientId }, { accountId: patientId }]
                 });
             } catch (_) {}
+            if (!patient) {
+                try {
+                    patient = await Patient.findById(targetMemberId);
+                } catch (_) {}
+            }
         }
 
-        if (!patient) {
-            patient = await Patient.findById(patientId);
+        if (!patient && patientId) {
+            try {
+                patient = await Patient.findById(patientId);
+            } catch (_) {}
         }
+
         if (!patient && phoneRegex) {
-            patient = await Patient.findOne({ phone: phoneRegex });
+            patient = await Patient.findOne({ phone: phoneRegex }).sort({ updatedAt: -1 });
+        }
+
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ phone: cleanPhone }).sort({ updatedAt: -1 });
         }
 
         if (!patient) {
@@ -354,13 +423,18 @@ exports.uploadDocument = async (req, res) => {
         }
 
         const { title, fileType } = req.body;
+        const fileUrl = req.file.path || req.file.secure_url || req.file.url;
 
         const newDocument = {
-            title: title || req.file.originalname || 'Health Document',
-            fileUrl: req.file.path, // Cloudinary secure URL
-            fileType: fileType || (req.file.mimetype?.includes('pdf') ? 'PDF' : 'Image'),
+            title: (title && title.trim()) || req.file.originalname || 'Health Document',
+            fileUrl: fileUrl,
+            fileType: fileType || (req.file.mimetype?.includes('pdf') ? 'PDF' : 'Lab Report'),
             uploadedAt: new Date()
         };
+
+        if (!Array.isArray(patient.documents)) {
+            patient.documents = [];
+        }
 
         patient.documents.push(newDocument);
         await patient.save();

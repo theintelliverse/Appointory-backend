@@ -67,7 +67,12 @@ const userSchema = mongoose.Schema({
     score: { type: Number, default: 0 },
     count: { type: Number, default: 0 }
   },
-  videoUrl: { type: String, default: '' }
+  videoUrl: { type: String, default: '' },
+  // 📋 DPDP Act 2023 Explicit Written Consent for Public Directory Listing
+  publicListingConsent: { type: Boolean, default: false },
+  publicListingConsentDate: { type: Date, default: null },
+  publicListingConsentIp: { type: String, default: '' },
+  publicListingConsentText: { type: String, default: '' }
 }, { timestamps: true });
 
 // Ensures email is unique within a single clinic only

@@ -7,8 +7,8 @@ const protect = async (req, res, next) => {
     if (token && token.startsWith('Bearer')) {
         try {
             token = token.split(' ')[1];
-            // Use the constant secret
-            const decoded = jwt.verify(token, JWT_SECRET);
+            // Use the constant secret pinned to HS256 algorithm
+            const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
 
             if (typeof decoded.tokenVersion === 'number' && decoded.id) {
                 const User = require('../models/User');
@@ -49,7 +49,7 @@ const protectPatient = async (req, res, next) => {
     if (!token) return res.status(401).json({ message: "No token, authorization denied" });
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
+        const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
 
         if (typeof decoded.tokenVersion === 'number' && decoded.id) {
             const Patient = require('../models/Patient');
@@ -77,7 +77,7 @@ const protectLab = (req, res, next) => {
     if (token && token.startsWith('Bearer')) {
         try {
             token = token.split(' ')[1];
-            const decoded = jwt.verify(token, JWT_SECRET);
+            const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
 
             if (decoded.role !== 'independent_lab') {
                 return res.status(403).json({ message: 'Access denied. Independent lab token required.' });

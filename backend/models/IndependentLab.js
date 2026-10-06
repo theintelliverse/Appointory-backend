@@ -82,7 +82,12 @@ const independentLabSchema = mongoose.Schema({
         count: { type: Number, default: 0 }
     },
     accreditation: [{ type: String }],
-    videoUrl: { type: String, default: '' }
+    videoUrl: { type: String, default: '' },
+    // 📋 DPDP Act 2023 Explicit Written Consent for Public Directory Listing
+    publicListingConsent: { type: Boolean, default: false },
+    publicListingConsentDate: { type: Date, default: null },
+    publicListingConsentIp: { type: String, default: '' },
+    publicListingConsentText: { type: String, default: '' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('IndependentLab', independentLabSchema);

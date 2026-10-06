@@ -67,7 +67,8 @@ exports.updateClinicSettings = async (req, res) => {
             specialties,
             specialtiesStr,
             seoTitle,
-            seoDescription
+            seoDescription,
+            publicListingConsent
         } = req.body;
         const clinicId = req.user.clinicId;
 
@@ -109,6 +110,7 @@ exports.updateClinicSettings = async (req, res) => {
         }
 
         // 2. Update Clinic
+        const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
         const updatedClinic = await Clinic.findByIdAndUpdate(
             clinicId,
             {
@@ -135,7 +137,15 @@ exports.updateClinicSettings = async (req, res) => {
                 ...(bio !== undefined && { bio }),
                 ...(specialtiesArray !== undefined && { specialties: specialtiesArray }),
                 ...(seoTitle !== undefined && { seoTitle }),
-                ...(seoDescription !== undefined && { seoDescription })
+                ...(seoDescription !== undefined && { seoDescription }),
+                ...(publicListingConsent !== undefined && {
+                    publicListingConsent: Boolean(publicListingConsent),
+                    publicListingConsentDate: publicListingConsent ? new Date() : null,
+                    publicListingConsentIp: clientIp,
+                    publicListingConsentText: publicListingConsent
+                        ? 'I hereby grant explicit written/digital consent to list and display our healthcare facility, contact details, and verified medical staff on the Appointory public healthcare directory in compliance with India’s DPDP Act 2023.'
+                        : ''
+                })
             },
             { new: true, runValidators: true }
         );
@@ -847,6 +857,259 @@ exports.getPublicClinicLeaves = async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Error fetching public clinic leaves:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const ssrCache = require('../utils/ssr_cache');
+
+function stripHtml(input) {
+    if (typeof input !== 'string') return '';
+    return input.replace(/<[^>]*>?/gm, '').trim();
+}
+
+function isValidGoogleUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim().toLowerCase();
+    try {
+        const parsed = new URL(trimmed);
+        if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+        const host = parsed.hostname;
+        return (
+            host.includes('google.com') ||
+            host.includes('maps.google') ||
+            host.includes('g.page') ||
+            host.includes('business.google.com') ||
+            host.includes('goo.gl')
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * @desc    Get SEO & Google Listing configurations for the logged-in clinic
+ * @route   GET /api/clinic/seo
+ * @access  Private (Admin only)
+ */
+exports.getClinicSeo = async (req, res) => {
+    try {
+        const clinic = await Clinic.findById(req.user.clinicId);
+        if (!clinic) {
+            return res.status(404).json({ success: false, message: 'Clinic not found' });
+        }
+
+        const baseUrl = process.env.PUBLIC_SITE_URL || 'https://appointory.in';
+        const effectiveSeo = clinic.getEffectiveSeo();
+
+        res.status(200).json({
+            success: true,
+            data: {
+                clinicId: clinic._id,
+                name: clinic.name,
+                city: clinic.city || '',
+                address: clinic.address,
+                contactPhone: clinic.contactPhone,
+                openingTime: clinic.openingTime,
+                closingTime: clinic.closingTime,
+                workingDays: clinic.workingDays,
+                slug: clinic.slug,
+                slugHistory: clinic.slugHistory || [],
+                publicConsent: Boolean(clinic.publicListingConsent),
+                publicListingConsentDate: clinic.publicListingConsentDate,
+                seo: clinic.seo || {},
+                effectiveSeo,
+                publicUrl: `${baseUrl}/c/${clinic.slug}`,
+                bookingUrl: `${baseUrl}/c/${clinic.slug}?book=1`
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error getting clinic SEO:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * @desc    Update SEO & Google Listing configurations for the logged-in clinic
+ * @route   PUT /api/clinic/seo
+ * @access  Private (Admin only)
+ */
+exports.updateClinicSeo = async (req, res) => {
+    try {
+        const clinic = await Clinic.findById(req.user.clinicId);
+        if (!clinic) {
+            return res.status(404).json({ success: false, message: 'Clinic not found' });
+        }
+
+        const {
+            metaTitle,
+            metaDescription,
+            focusKeyword,
+            keywords,
+            about,
+            services,
+            faqs,
+            ogImageUrl,
+            googleBusinessUrl,
+            noindex,
+            slug,
+            confirmSlugChange,
+            city
+        } = req.body;
+
+        // Consent Check: Reject noindex=false if consent is not granted
+        const willBeIndexed = noindex === false || noindex === 'false';
+        if (willBeIndexed && !clinic.publicListingConsent) {
+            return res.status(400).json({
+                success: false,
+                message: 'Public listing consent required before enabling Google indexing.'
+            });
+        }
+
+        // Validate lengths & sanitize
+        const cleanMetaTitle = stripHtml(metaTitle || '').slice(0, 70);
+        const cleanMetaDescription = stripHtml(metaDescription || '').slice(0, 170);
+        const cleanFocusKeyword = stripHtml(focusKeyword || '').slice(0, 60);
+        const cleanAbout = stripHtml(about || '').slice(0, 2000);
+
+        // Keywords: max 15, max 40 chars each, lowercased, deduped
+        let cleanKeywords = [];
+        if (Array.isArray(keywords)) {
+            const set = new Set();
+            for (const kw of keywords) {
+                const cleaned = stripHtml(kw).toLowerCase().slice(0, 40);
+                if (cleaned) set.add(cleaned);
+                if (set.size >= 15) break;
+            }
+            cleanKeywords = Array.from(set);
+        }
+
+        // Services: max 25, max 60 chars each, deduped
+        let cleanServices = [];
+        if (Array.isArray(services)) {
+            const set = new Set();
+            for (const s of services) {
+                const cleaned = stripHtml(s).slice(0, 60);
+                if (cleaned) set.add(cleaned);
+                if (set.size >= 25) break;
+            }
+            cleanServices = Array.from(set);
+        }
+
+        // FAQs: max 8
+        let cleanFaqs = [];
+        if (Array.isArray(faqs)) {
+            for (const item of faqs) {
+                if (item && (item.q || item.a)) {
+                    cleanFaqs.push({
+                        q: stripHtml(item.q || '').slice(0, 200),
+                        a: stripHtml(item.a || '').slice(0, 1000)
+                    });
+                }
+                if (cleanFaqs.length >= 8) break;
+            }
+        }
+
+        // Google Business URL validation
+        let cleanGoogleBusinessUrl = '';
+        if (googleBusinessUrl) {
+            const rawUrl = String(googleBusinessUrl).trim();
+            if (!isValidGoogleUrl(rawUrl)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid Google Business Profile URL. Must be a valid Google Maps, g.page, or business.google.com link.'
+                });
+            }
+            cleanGoogleBusinessUrl = rawUrl;
+        }
+
+        // OG Image URL validation
+        let cleanOgImageUrl = '';
+        if (ogImageUrl) {
+            const rawImg = String(ogImageUrl).trim();
+            if (rawImg.startsWith('http://') || rawImg.startsWith('https://')) {
+                cleanOgImageUrl = rawImg;
+            }
+        }
+
+        // Slug management & 301 history tracking
+        if (slug && typeof slug === 'string') {
+            const normalizedSlug = slug.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-');
+            if (normalizedSlug && normalizedSlug !== clinic.slug) {
+                if (!confirmSlugChange) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Slug change requires explicit confirmation. Existing URLs will be 301 permanently redirected.'
+                    });
+                }
+
+                // Check uniqueness
+                const slugExists = await Clinic.findOne({ slug: normalizedSlug, _id: { $ne: clinic._id } });
+                if (slugExists) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'The requested custom slug is already registered by another clinic.'
+                    });
+                }
+
+                if (!clinic.slugHistory) clinic.slugHistory = [];
+                if (clinic.slug && !clinic.slugHistory.includes(clinic.slug)) {
+                    clinic.slugHistory.push(clinic.slug);
+                }
+                clinic.slug = normalizedSlug;
+            }
+        }
+
+        if (city && typeof city === 'string') {
+            clinic.city = stripHtml(city).slice(0, 60);
+        }
+
+        // Store SEO data
+        clinic.seo = {
+            metaTitle: cleanMetaTitle,
+            metaDescription: cleanMetaDescription,
+            focusKeyword: cleanFocusKeyword,
+            keywords: cleanKeywords,
+            about: cleanAbout,
+            services: cleanServices,
+            faqs: cleanFaqs,
+            ogImageUrl: cleanOgImageUrl,
+            googleBusinessUrl: cleanGoogleBusinessUrl,
+            noindex: Boolean(noindex),
+            seoUpdatedAt: new Date(),
+            seoUpdatedBy: req.user.id
+        };
+
+        // Also sync legacy fields if present
+        if (cleanMetaTitle) clinic.seoTitle = cleanMetaTitle;
+        if (cleanMetaDescription) clinic.seoDescription = cleanMetaDescription;
+        if (cleanKeywords.length > 0) clinic.seoKeywords = cleanKeywords;
+        if (cleanServices.length > 0) clinic.specialties = cleanServices;
+        if (cleanAbout) clinic.bio = cleanAbout;
+
+        await clinic.save();
+
+        // Invalidate SSR cache entry for this clinic & all previous slugs
+        ssrCache.invalidateClinic(clinic.slug);
+        if (clinic.slugHistory) {
+            clinic.slugHistory.forEach(s => ssrCache.invalidateClinic(s));
+        }
+
+        const baseUrl = process.env.PUBLIC_SITE_URL || 'https://appointory.in';
+        res.status(200).json({
+            success: true,
+            message: 'Clinic SEO settings successfully updated and published.',
+            data: {
+                seo: clinic.seo,
+                effectiveSeo: clinic.getEffectiveSeo(),
+                slug: clinic.slug,
+                slugHistory: clinic.slugHistory,
+                publicUrl: `${baseUrl}/c/${clinic.slug}`,
+                bookingUrl: `${baseUrl}/c/${clinic.slug}?book=1`
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error updating clinic SEO:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };

@@ -19,8 +19,29 @@ exports.fetchPatientBillingData = async (req, res) => {
             });
         }
 
-        // 1. Fetch Patient Profile
-        const patient = await Patient.findOne({ phone }).lean();
+        // 1. Fetch Primary Patient Profile & Any Linked Family Accounts
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        let patient = await Patient.findOne({
+            phone: new RegExp(cleanPhone + '$'),
+            isPrimaryAccount: true
+        }).lean();
+
+        if (!patient) {
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$') }).lean();
+        }
+
+        let familyMembers = [];
+        if (patient) {
+            const rootId = patient.accountId || patient._id;
+            familyMembers = await Patient.find({
+                $or: [
+                    { _id: rootId },
+                    { accountId: rootId },
+                    { phone: new RegExp(cleanPhone + '$') }
+                ],
+                mergedInto: null
+            }).select('_id name phone relationship isPrimaryAccount isMinor age gender').lean();
+        }
 
         // 2. Fetch Clinic Config & Default Fees
         const clinic = await Clinic.findById(clinicId).lean();
@@ -86,12 +107,27 @@ exports.fetchPatientBillingData = async (req, res) => {
             patientFound: !!patient,
             patient: patient ? {
                 id: patient._id,
+                _id: patient._id,
                 name: patient.name,
                 phone: patient.phone,
+                relationship: patient.relationship || 'Self',
+                isPrimaryAccount: Boolean(patient.isPrimaryAccount),
+                isMinor: Boolean(patient.isMinor),
                 age: patient.age || '',
                 gender: patient.gender || 'Male',
                 bloodGroup: patient.bloodGroup || 'O+'
             } : null,
+            familyMembers: (familyMembers || []).map(m => ({
+                id: m._id,
+                _id: m._id,
+                name: m.name,
+                phone: m.phone,
+                relationship: m.relationship || (m.isPrimaryAccount ? 'Self' : 'Family Member'),
+                isPrimaryAccount: Boolean(m.isPrimaryAccount),
+                isMinor: Boolean(m.isMinor),
+                age: m.age || '',
+                gender: m.gender || ''
+            })),
             queue: queueEntry ? {
                 id: queueEntry._id,
                 tokenNumber: queueEntry.tokenNumber || 'TK',
@@ -125,6 +161,7 @@ exports.fetchPatientBillingData = async (req, res) => {
 exports.createInvoice = async (req, res) => {
     try {
         const {
+            patientId,
             patientName,
             patientPhone,
             doctorId,
@@ -161,12 +198,38 @@ exports.createInvoice = async (req, res) => {
             });
         }
 
-        // 1. Auto-Check or Create Patient Profile
-        let patient = await Patient.findOne({ phone: patientPhone });
+        // 1. Auto-Check or Resolve Exact Patient Profile (Supporting Family Members & Primary Account)
+        let patient = null;
+        if (patientId) {
+            try {
+                patient = await Patient.findById(patientId);
+            } catch (_) {}
+        }
+
+        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+
+        if (!patient && cleanPhone) {
+            const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            patient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i')
+            });
+
+            if (!patient) {
+                patient = await Patient.findOne({
+                    phone: new RegExp(cleanPhone + '$'),
+                    isPrimaryAccount: true
+                }) || await Patient.findOne({
+                    phone: new RegExp(cleanPhone + '$')
+                });
+            }
+        }
+
         if (!patient) {
             patient = await Patient.create({
                 name: patientName,
-                phone: patientPhone,
+                phone: cleanPhone || patientPhone,
+                isPrimaryAccount: true,
                 registeredOn: new Date()
             });
         }
@@ -181,7 +244,7 @@ exports.createInvoice = async (req, res) => {
         if (!activeQueueId && billingType === 'clinic') {
             const existingQueueToday = await Queue.findOne({
                 clinicId,
-                patientPhone,
+                patientPhone: new RegExp(cleanPhone + '$'),
                 createdAt: { $gte: startOfDay }
             });
 
@@ -206,8 +269,9 @@ exports.createInvoice = async (req, res) => {
 
                     const newQueueEntry = await Queue.create({
                         clinicId,
-                        patientName,
-                        patientPhone,
+                        patientId: patient?._id || null,
+                        patientName: patient?.name || patientName,
+                        patientPhone: cleanPhone || patientPhone,
                         doctorId: docIdToAssign,
                         tokenNumber: generatedToken,
                         visitType: 'Walk-in',
@@ -221,7 +285,7 @@ exports.createInvoice = async (req, res) => {
                     if (req.io) {
                         req.io.to(clinicId.toString()).emit('queueUpdate');
                         req.io.to(clinicId.toString()).emit('newCheckInRequest', {
-                            message: `New token ${generatedToken} generated for ${patientName} via billing.`
+                            message: `New token ${generatedToken} generated for ${patient?.name || patientName} via billing.`
                         });
                     }
                 }
@@ -249,36 +313,76 @@ exports.createInvoice = async (req, res) => {
             }
         }
 
-        const numTax = Number(tax) || 0;
-        const cgst = Number((numTax / 2).toFixed(2));
-        const sgst = Number((numTax / 2).toFixed(2));
-        const effectiveTaxRate = Number(req.body.taxRate) || (clinicDoc?.taxRate ?? 0);
+        // 🔒 Server-Side Financial Recalculation & Tamper Proofing
+        let calculatedSubtotal = 0;
+        const sanitizedItems = [];
+        for (const it of items) {
+            const description = String(it.description || it.name || 'Clinical Service').trim();
+            const fee = Math.max(0, Number(it.fee || it.amount || 0));
+            const quantity = Math.max(1, Math.floor(Number(it.quantity || 1)));
+            const lineTotal = Number((fee * quantity).toFixed(2));
+            calculatedSubtotal += lineTotal;
+            sanitizedItems.push({
+                description,
+                fee,
+                quantity,
+                amount: lineTotal,
+                sacCode: it.sacCode || (billingType === 'lab' ? '999316' : '999312')
+            });
+        }
+        calculatedSubtotal = Number(calculatedSubtotal.toFixed(2));
+
+        // Enforce: discount must be positive and cannot exceed subtotal
+        const rawDiscount = Math.max(0, Number(discount) || 0);
+        const safeDiscount = Math.min(calculatedSubtotal, Number(rawDiscount.toFixed(2)));
+        const taxableAmount = Math.max(0, Number((calculatedSubtotal - safeDiscount).toFixed(2)));
+
+        // Healthcare exemption (0% GST) or clinic configured rate
+        const effectiveTaxRate = clinicDoc?.taxEnabled
+            ? Math.max(0, Number(req.body.taxRate !== undefined ? req.body.taxRate : (clinicDoc?.taxRate ?? 0)))
+            : 0;
+        const calculatedTax = Number(((taxableAmount * effectiveTaxRate) / 100).toFixed(2));
+        const cgst = Number((calculatedTax / 2).toFixed(2));
+        const sgst = Number((calculatedTax / 2).toFixed(2));
+
+        const safeOnlinePending = Math.max(0, Number(onlinePendingDues) || 0);
+        const calculatedTotal = Number((taxableAmount + calculatedTax + safeOnlinePending).toFixed(2));
+
+        const rawPaid = Math.max(0, Number(paidAmount) || 0);
+        const safePaid = Math.min(calculatedTotal, Number(rawPaid.toFixed(2)));
+        const calculatedRemainingDue = Number(Math.max(0, calculatedTotal - safePaid).toFixed(2));
+
+        const safePaymentStatus = calculatedRemainingDue <= 0
+            ? 'Paid'
+            : (safePaid > 0 ? 'Partially Paid' : 'Pending');
+
         const verificationToken = crypto.randomBytes(16).toString('hex');
 
         const invoice = await PatientInvoice.create({
             invoiceNumber,
             clinicId,
-            patientName,
-            patientPhone,
+            patientId: patient?._id || null,
+            patientName: patient?.name || patientName,
+            patientPhone: cleanPhone || patientPhone,
             doctorId: doctorId || null,
             doctorName: doctorName || '',
             doctorLicenseNumber,
             clinicGstin,
             billingType,
-            items,
-            subtotal,
-            discount,
-            tax: numTax,
+            items: sanitizedItems,
+            subtotal: calculatedSubtotal,
+            discount: safeDiscount,
+            tax: calculatedTax,
             taxRate: effectiveTaxRate,
             cgst,
             sgst,
             verificationToken,
-            onlinePendingDues,
-            totalAmount,
-            paidAmount,
-            remainingDue: Math.max(0, remainingDue),
-            paymentMode,
-            paymentStatus,
+            onlinePendingDues: safeOnlinePending,
+            totalAmount: calculatedTotal,
+            paidAmount: safePaid,
+            remainingDue: calculatedRemainingDue,
+            paymentMode: paymentMode || 'Cash',
+            paymentStatus: safePaymentStatus,
             queueId: activeQueueId,
             notes: notes || '',
             createdBy: req.user._id,
@@ -723,8 +827,17 @@ exports.verifyPublicInvoice = async (req, res) => {
         }
 
         const cleanId = id.trim();
+        const isToken = cleanId.length === 32 && /^[a-f0-9]{32}$/i.test(cleanId);
         const isObjectId = mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24;
-        const query = isObjectId ? { _id: cleanId } : { invoiceNumber: cleanId.toUpperCase() };
+
+        let query;
+        if (isToken) {
+            query = { verificationToken: cleanId.toLowerCase() };
+        } else if (isObjectId) {
+            query = { _id: cleanId };
+        } else {
+            query = { invoiceNumber: cleanId.toUpperCase() };
+        }
 
         const invoice = await PatientInvoice.findOne(query)
             .populate('clinicId', 'name address contactPhone clinicCode gstin email')
@@ -737,6 +850,19 @@ exports.verifyPublicInvoice = async (req, res) => {
                 verified: false,
                 message: "Invoice not found or invalid verification link."
             });
+        }
+
+        // 🛡️ ANTI-ENUMERATION PROTECTION:
+        // If accessed by sequential invoiceNumber or ObjectId, require the unguessable verification token
+        if (!isToken && invoice.verificationToken) {
+            const providedToken = (req.query.token || req.query.t || '').trim().toLowerCase();
+            if (!providedToken || providedToken !== invoice.verificationToken.toLowerCase()) {
+                return res.status(403).json({
+                    success: false,
+                    verified: false,
+                    message: "A valid verification token parameter (?token=...) is required to verify this invoice."
+                });
+            }
         }
 
         // DPDP Act privacy compliance: mask patient PII on public verification page

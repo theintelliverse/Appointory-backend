@@ -68,6 +68,41 @@ router.patch('/settings', protect, authorize('admin', 'lab'), clinicController.u
 router.patch('/inventory', protect, authorize('admin', 'lab'), clinicController.updateInventory);
 
 /**
+ * @route   GET /api/clinic/seo
+ * @desc    Fetch clinic SEO & Google listing settings
+ * @access  Private (Admin only)
+ */
+router.get('/seo', protect, authorize('admin'), clinicController.getClinicSeo);
+
+const multer = require('multer');
+const { storage } = require('../utils/cloudinary_config');
+const upload = multer({ storage });
+
+/**
+ * @route   POST /api/clinic/upload-og-image
+ * @desc    Upload OG preview image to Cloudinary
+ * @access  Private (Admin only)
+ */
+router.post('/upload-og-image', protect, authorize('admin'), upload.single('image'), (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No image uploaded' });
+        }
+        const imageUrl = req.file.path || req.file.secure_url;
+        return res.status(200).json({ success: true, url: imageUrl });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   PUT /api/clinic/seo
+ * @desc    Update clinic SEO & Google listing settings
+ * @access  Private (Admin only)
+ */
+router.put('/seo', protect, authorize('admin'), clinicController.updateClinicSeo);
+
+/**
  * @route   DELETE /api/clinic/deactivate
  * @desc    Request clinic deactivation (Danger Zone)
  * @access  Private (Admin)

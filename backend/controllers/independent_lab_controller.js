@@ -30,13 +30,18 @@ exports.registerLab = async (req, res) => {
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
         if (!emailOtp || !smsOtp) {
-            const generatedEmailOtp = Math.floor(100000 + Math.random() * 900000).toString();
-            const generatedSmsOtp = Math.floor(100000 + Math.random() * 900000).toString();
+            const { generateSecureOtp, hashOtp } = require('../utils/otp_helper');
+            const generatedEmailOtp = generateSecureOtp();
+            const generatedSmsOtp = generateSecureOtp();
+            const hashedCombined = hashOtp(`${generatedEmailOtp}:${generatedSmsOtp}`);
 
             await Otp.findOneAndUpdate(
                 { identifier: email.toLowerCase(), type: 'lab_registration' },
                 {
-                    otp: `${generatedEmailOtp}:${generatedSmsOtp}`,
+                    otp: hashedCombined,
+                    rawPayload: `${generatedEmailOtp}:${generatedSmsOtp}`,
+                    attempts: 0,
+                    maxAttempts: 5,
                     expiresAt: new Date(Date.now() + 600000) // 10 minutes
                 },
                 { upsert: true, new: true }
@@ -65,8 +70,7 @@ exports.registerLab = async (req, res) => {
             return res.status(200).json({
                 success: true,
                 verificationRequired: true,
-                message: "Verification codes sent to your email and phone number.",
-                debugOtp: process.env.NODE_ENV === 'development' ? { emailOtp: generatedEmailOtp, smsOtp: generatedSmsOtp } : undefined
+                message: "Verification codes sent to your email and phone number."
             });
         }
 
@@ -75,9 +79,35 @@ exports.registerLab = async (req, res) => {
             return res.status(400).json({ success: false, message: "Verification codes expired or invalid. Please request new codes." });
         }
 
-        const [expectedEmailOtp, expectedSmsOtp] = (storedOtpDoc.otp || '').split(':');
-        if (expectedEmailOtp !== emailOtp || expectedSmsOtp !== smsOtp) {
-            return res.status(400).json({ success: false, message: "Invalid email or SMS verification code. Please check and try again." });
+        if (storedOtpDoc.attempts >= (storedOtpDoc.maxAttempts || 5)) {
+            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+            return res.status(400).json({ success: false, message: "Too many failed attempts. Verification codes have been invalidated. Please request new codes." });
+        }
+
+        const { hashOtp } = require('../utils/otp_helper');
+        const inputHash = hashOtp(`${emailOtp.trim()}:${smsOtp.trim()}`);
+        let isMatch = false;
+
+        if (storedOtpDoc.otp && storedOtpDoc.otp.length === 64) {
+            try {
+                const bufA = Buffer.from(inputHash, 'hex');
+                const bufB = Buffer.from(storedOtpDoc.otp, 'hex');
+                isMatch = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+            } catch (_) { isMatch = false; }
+        } else {
+            const [expectedEmailOtp, expectedSmsOtp] = (storedOtpDoc.otp || '').split(':');
+            isMatch = expectedEmailOtp === emailOtp && expectedSmsOtp === smsOtp;
+        }
+
+        if (!isMatch) {
+            storedOtpDoc.attempts = (storedOtpDoc.attempts || 0) + 1;
+            const remaining = Math.max(0, (storedOtpDoc.maxAttempts || 5) - storedOtpDoc.attempts);
+            if (remaining <= 0) {
+                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
+                return res.status(400).json({ success: false, message: "Too many failed verification attempts. Please request new codes." });
+            }
+            await storedOtpDoc.save();
+            return res.status(400).json({ success: false, message: `Invalid verification codes. ${remaining} attempt(s) remaining.` });
         }
 
         await Otp.deleteOne({ _id: storedOtpDoc._id });
@@ -229,11 +259,24 @@ exports.getLabMe = async (req, res) => {
  */
 exports.updateLabProfile = async (req, res) => {
     try {
-        const { labName, phone, address, logo } = req.body;
+        const { labName, phone, address, logo, publicListingConsent } = req.body;
+        const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
+
+        const updateData = {
+            labName, phone, address, logo,
+            ...(publicListingConsent !== undefined && {
+                publicListingConsent: Boolean(publicListingConsent),
+                publicListingConsentDate: publicListingConsent ? new Date() : null,
+                publicListingConsentIp: clientIp,
+                publicListingConsentText: publicListingConsent
+                    ? 'I hereby grant explicit written/digital consent to list and display our diagnostic laboratory profile, test catalog, and operational schedule on the Appointory public directory in compliance with India’s DPDP Act 2023.'
+                    : ''
+            })
+        };
 
         const updated = await IndependentLab.findByIdAndUpdate(
             req.lab.id,
-            { labName, phone, address, logo },
+            updateData,
             { new: true, runValidators: true }
         ).select('-password -resetToken -resetTokenExpiry');
 
@@ -331,7 +374,7 @@ exports.labResetPassword = async (req, res) => {
 exports.createLabInvoice = async (req, res) => {
     try {
         const labId = req.lab.id;
-        const { patientName, patientPhone, items, subtotal, discount, tax, totalAmount, paidAmount, paymentMode, notes } = req.body;
+        const { patientId, patientName, patientPhone, items, subtotal, discount, tax, totalAmount, paidAmount, paymentMode, notes } = req.body;
 
         if (!patientName || !patientPhone || !items || !items.length) {
             return res.status(400).json({ success: false, message: 'Patient details and billed items are required.' });
@@ -339,9 +382,31 @@ exports.createLabInvoice = async (req, res) => {
 
         const PatientInvoice = require('../models/PatientInvoice');
         const IndependentLab = require('../models/IndependentLab');
+        const Patient = require('../models/Patient');
         const lab = await IndependentLab.findById(labId);
 
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+
+        let targetPatient = null;
+        if (patientId) {
+            try { targetPatient = await Patient.findById(patientId); } catch (_) {}
+        }
+        if (!targetPatient && cleanPhone) {
+            const escapedName = patientName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            targetPatient = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp('^' + escapedName + '$', 'i')
+            });
+            if (!targetPatient) {
+                targetPatient = await Patient.findOne({
+                    phone: new RegExp(cleanPhone + '$'),
+                    isPrimaryAccount: true
+                }) || await Patient.findOne({
+                    phone: new RegExp(cleanPhone + '$')
+                });
+            }
+        }
+
         const invoiceNumber = `LAB-${Date.now().toString().slice(-6)}${Math.floor(100 + Math.random() * 900)}`;
 
         const parsedSubtotal = Number(subtotal) || 0;
@@ -358,7 +423,8 @@ exports.createLabInvoice = async (req, res) => {
         const invoice = await PatientInvoice.create({
             invoiceNumber,
             clinicId: labId, // reference to IndependentLab ID
-            patientName,
+            patientId: targetPatient?._id || null,
+            patientName: targetPatient?.name || patientName,
             patientPhone: cleanPhone,
             billingType: 'lab',
             items,

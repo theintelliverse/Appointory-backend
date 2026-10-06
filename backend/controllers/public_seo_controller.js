@@ -28,16 +28,30 @@ exports.getPublicClinicProfile = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Clinic profile not found or inactive.' });
         }
 
-        // Fetch associated doctors
+        // 🔒 Explicit Written Consent Check under DPDP Act 2023
+        if (!clinic.publicListingConsent) {
+            return res.status(404).json({
+                success: false,
+                isConsentRestricted: true,
+                message: 'This clinic has not opted into public directory listing. Explicit written consent is required under India\'s DPDP Act 2023.'
+            });
+        }
+
+        // Fetch associated doctors with explicit directory consent
         const doctors = await User.find({
             clinicId: clinic._id,
             role: 'doctor',
-            isActive: true
+            isActive: true,
+            publicListingConsent: true
         }).select('name specialization profileImage bio experience education consultationFee slug rating medicalLicenseNumber availableDays languages videoUrl');
 
-        // Fetch connected labs
+        // Fetch connected labs with explicit directory consent
         const connections = await LabConnection.find({ clinicId: clinic._id, status: 'accepted' })
-            .populate('labId', 'labName labCode address phone logo slug availableTests rating accreditation');
+            .populate({
+                path: 'labId',
+                match: { publicListingConsent: true },
+                select: 'labName labCode address phone logo slug availableTests rating accreditation'
+            });
 
         const connectedLabs = connections.map(c => c.labId).filter(Boolean);
 
@@ -130,19 +144,26 @@ exports.getPublicClinicProfile = async (req, res) => {
             }
         ];
 
+        const effectiveSeo = typeof clinic.getEffectiveSeo === 'function' ? clinic.getEffectiveSeo() : (clinic.seo || {});
+
+        const combinedFaqs = (effectiveSeo.faqs && effectiveSeo.faqs.length > 0)
+            ? effectiveSeo.faqs.map(f => ({ question: f.q, answer: f.a }))
+            : faqs;
+
         res.status(200).json({
             success: true,
             data: {
                 clinic,
+                effectiveSeo,
                 doctors,
                 connectedLabs,
-                faqs,
+                faqs: combinedFaqs,
                 jsonLd,
                 meta: {
-                    title: clinic.seoTitle || `${clinic.name} - Live Queue & Online Doctor Appointment`,
-                    description: clinic.seoDescription || clinic.bio || `Consult expert doctors at ${clinic.name}. Instant online appointment booking and live queue token tracking on Appointory.`,
+                    title: effectiveSeo.metaTitle || clinic.seoTitle || `${clinic.name} – ${clinic.city || 'India'} | Book Appointment Online`,
+                    description: effectiveSeo.metaDescription || clinic.seoDescription || clinic.bio || `Consult expert doctors at ${clinic.name}. Instant online appointment booking and live queue token tracking on Appointory.`,
                     canonicalUrl: profileUrl,
-                    ogImage: clinic.logo || `${baseUrl}/assets/og-image-banner.jpg`
+                    ogImage: effectiveSeo.ogImageUrl || clinic.logo || `${baseUrl}/assets/og-image-banner.jpg`
                 }
             }
         });
@@ -165,6 +186,15 @@ exports.getPublicDoctorProfile = async (req, res) => {
 
         if (!doctor) {
             return res.status(404).json({ success: false, message: 'Doctor profile not found.' });
+        }
+
+        // 🔒 Explicit Written Consent Check under DPDP Act 2023
+        if (!doctor.publicListingConsent) {
+            return res.status(404).json({
+                success: false,
+                isConsentRestricted: true,
+                message: 'This doctor has not opted into public directory listing. Explicit written consent is required from medical practitioners under India\'s DPDP Act 2023.'
+            });
         }
 
         const clinic = await Clinic.findById(doctor.clinicId).select('name clinicCode address contactPhone openingTime closingTime locationGeo logo slug rating');
@@ -251,9 +281,22 @@ exports.getPublicLabProfile = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Diagnostic lab profile not found.' });
         }
 
-        // Fetch connected clinics network
+        // 🔒 Explicit Written Consent Check under DPDP Act 2023
+        if (!lab.publicListingConsent) {
+            return res.status(404).json({
+                success: false,
+                isConsentRestricted: true,
+                message: 'This diagnostic lab has not opted into public directory listing. Explicit written consent is required under India\'s DPDP Act 2023.'
+            });
+        }
+
+        // Fetch connected clinics network with explicit consent
         const connections = await LabConnection.find({ labId: lab._id, status: 'accepted' })
-            .populate('clinicId', 'name clinicCode address contactPhone logo slug');
+            .populate({
+                path: 'clinicId',
+                match: { publicListingConsent: true },
+                select: 'name clinicCode address contactPhone logo slug'
+            });
 
         const connectedClinics = connections.map(c => c.clinicId).filter(Boolean);
 
@@ -355,20 +398,53 @@ exports.getPublicLabProfile = async (req, res) => {
 exports.generateSitemapXml = async (req, res) => {
     try {
         const baseUrl = getBaseUrl(req);
-        const clinics = await Clinic.find({ isActive: true }).select('slug updatedAt createdAt');
-        const doctors = await User.find({ role: 'doctor', isActive: true }).select('slug updatedAt createdAt');
-        const labs = await IndependentLab.find({ isActive: true }).select('slug updatedAt createdAt');
+        const clinics = await Clinic.find({ isActive: true, publicListingConsent: true }).select('slug updatedAt createdAt');
+        const doctors = await User.find({ role: 'doctor', isActive: true, publicListingConsent: true }).select('slug updatedAt createdAt');
+        const labs = await IndependentLab.find({ isActive: true, publicListingConsent: true }).select('slug updatedAt createdAt');
 
         let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
         xml += `<urlset xmlns="http://www.sitemap.org/schemas/sitemap/0.9">\n`;
 
-        // Static core routes
-        const staticRoutes = ['', 'login', 'register-clinic', 'patient/checkin', 'privacy', 'terms', 'cookie-policy', 'refund-policy', 'contact', 'llms.txt', 'llms-full.txt', 'ai.txt'];
+        // Static public core & landing routes (strictly excluding private patient, auth, and cabin routes under DPDP Act 2023)
+        const staticRoutes = [
+            '',
+            'features/queue-management',
+            'features/token-display-tv',
+            'features/gst-billing',
+            'features/lab-network',
+            'features/digital-prescription',
+            'for/clinics',
+            'for/doctors',
+            'for/labs',
+            'pricing',
+            'blog',
+            'compare/appointory-vs-practo',
+            'clinic-software/ahmedabad',
+            'clinic-software/surat',
+            'clinic-software/vadodara',
+            'clinic-software/rajkot',
+            'clinic-software/mumbai',
+            'clinic-software/delhi',
+            'clinic-software/bengaluru',
+            'clinic-software/pune',
+            'about',
+            'press',
+            'links',
+            'privacy',
+            'terms',
+            'cookie-policy',
+            'refund-policy',
+            'contact',
+            'llms.txt',
+            'llms-full.txt',
+            'ai.txt'
+        ];
         staticRoutes.forEach(route => {
+            const priority = route === '' ? '1.0' : route.startsWith('features/') || route === 'pricing' ? '0.9' : '0.8';
             xml += `  <url>\n`;
-            xml += `    <loc>${baseUrl}/${route}</loc>\n`;
+            xml += `    <loc>${baseUrl}${route ? `/${route}` : ''}</loc>\n`;
             xml += `    <changefreq>daily</changefreq>\n`;
-            xml += `    <priority>${route === '' ? '1.0' : '0.8'}</priority>\n`;
+            xml += `    <priority>${priority}</priority>\n`;
             xml += `  </url>\n`;
         });
 
@@ -445,9 +521,9 @@ Sitemap: ${baseUrl}/sitemap.xml
 exports.generateLlmTxt = async (req, res) => {
     try {
         const baseUrl = getBaseUrl(req);
-        const clinics = await Clinic.find({ isActive: true }).select('name clinicCode address contactPhone specialties bio feeConsult slug locationGeo workingDays openingTime closingTime');
-        const doctors = await User.find({ role: 'doctor', isActive: true }).populate('clinicId', 'name').select('name specialization experience education consultationFee bio slug medicalLicenseNumber languages');
-        const labs = await IndependentLab.find({ isActive: true }).select('labName labCode address phone availableTests bio slug accreditation rating');
+        const clinics = await Clinic.find({ isActive: true, publicListingConsent: true }).select('name clinicCode address contactPhone specialties bio feeConsult slug locationGeo workingDays openingTime closingTime');
+        const doctors = await User.find({ role: 'doctor', isActive: true, publicListingConsent: true }).populate('clinicId', 'name').select('name specialization experience education consultationFee bio slug medicalLicenseNumber languages');
+        const labs = await IndependentLab.find({ isActive: true, publicListingConsent: true }).select('labName labCode address phone availableTests bio slug accreditation rating');
 
         let md = `# Appointory Comprehensive Healthcare Network Context\n\n`;
         md += `> Verified database of doctors, health centers, smart clinical billing services, and independent diagnostic laboratories available on Appointory (${baseUrl}). Optimized for AI Search Engines (GEO), Answer Engines (AEO), and Natural Language Patient Directives.\n\n`;
