@@ -8,8 +8,9 @@ try {
     // Ignore on older Node versions
 }
 
-const cleanString = (val) => (val || '').trim();
-const cleanPassword = (val) => (val || '').replace(/[\s"]/g, '').trim();
+const cleanString = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
+const cleanPassword = (val) => (val || '').replace(/[\s"']/g, '').trim();
+const cleanSecret = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
 
 // ✅ VALIDATION: Check if email service is configured (via Vercel HTTP service or direct SMTP)
 const validateEmailConfig = () => {
@@ -61,8 +62,8 @@ let isInitializing = false;
 
 // Primary email sender using the dedicated Vercel email service
 const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
-    const vercelUrl = process.env.EMAIL_SERVICE_URL;
-    const vercelSecret = process.env.EMAIL_SERVICE_SECRET;
+    const vercelUrl = cleanString(process.env.EMAIL_SERVICE_URL);
+    const vercelSecret = cleanSecret(process.env.EMAIL_SERVICE_SECRET);
 
     if (!vercelUrl) {
         throw new Error('EMAIL_SERVICE_URL is not configured.');
@@ -95,6 +96,7 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
             subject: mailOptions.subject,
             html: mailOptions.html,
             attachments: mailOptions.attachments || [],
+            secret: vercelSecret || '',
             smtpConfig: activeSmtpConfig
         })
     });
@@ -110,27 +112,35 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
 
 // Wrapper: try Vercel email service first, fall back to direct SMTP
 const wrapTransporter = (transporterToWrap, smtpConfig = null) => {
-    const vercelUrl = process.env.EMAIL_SERVICE_URL;
+    const vercelUrl = cleanString(process.env.EMAIL_SERVICE_URL);
 
     return {
         sendMail: async (mailOptions) => {
+            let lastError = null;
+
             // PRIMARY: Vercel email service (if configured)
             if (vercelUrl) {
                 try {
                     return await sendMailViaVercel(mailOptions, smtpConfig);
                 } catch (vercelError) {
                     console.warn('⚠️ Vercel email service failed, falling back to direct SMTP:', vercelError.message);
+                    lastError = vercelError;
                 }
             }
 
             // FALLBACK: direct SMTP transporter
             const activeTransporter = transporterToWrap || transporter || createTransporter();
             if (activeTransporter) {
-                console.log(`📤 Sending email via direct SMTP to: ${mailOptions.to}`);
-                return await activeTransporter.sendMail(mailOptions);
+                try {
+                    console.log(`📤 Sending email via direct SMTP to: ${mailOptions.to}`);
+                    return await activeTransporter.sendMail(mailOptions);
+                } catch (smtpError) {
+                    console.error('❌ Direct SMTP fallback also failed:', smtpError.message);
+                    lastError = smtpError;
+                }
             }
 
-            throw new Error('No email delivery method available. Set EMAIL_SERVICE_URL or configure SMTP credentials.');
+            throw new Error(lastError ? lastError.message : 'No email delivery method available. Set EMAIL_SERVICE_URL or configure SMTP credentials.');
         }
     };
 };
@@ -221,13 +231,19 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
             if (config && config.smtpUser && config.smtpPass) {
                 const decryptedPass = decrypt(config.smtpPass);
 
+                const cleanUser = cleanString(config.smtpUser);
+                const cleanPass = cleanPassword(decryptedPass);
+                const isGmail = (config.smtpHost || 'smtp.gmail.com').includes('gmail');
+                const port = config.smtpPort ? Number(config.smtpPort) : (isGmail ? 465 : 587);
+                const secure = config.smtpSecure !== undefined ? Boolean(config.smtpSecure) : (port === 465);
+
                 const smtpConfig = {
                     host: config.smtpHost || 'smtp.gmail.com',
-                    port: config.smtpPort || 587,
-                    secure: config.smtpSecure || false,
+                    port,
+                    secure,
                     auth: {
-                        user: config.smtpUser,
-                        pass: decryptedPass,
+                        user: cleanUser,
+                        pass: cleanPass,
                     }
                 };
 
