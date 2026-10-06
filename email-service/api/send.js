@@ -4,7 +4,7 @@ const dns = require('dns');
 // 🌐 Force IPv4 first
 try {
     dns.setDefaultResultOrder('ipv4first');
-} catch (e) {}
+} catch (e) { }
 
 const ipv4Lookup = (hostname, options, callback) => {
     const cb = typeof options === 'function' ? options : callback;
@@ -16,7 +16,14 @@ const ipv4Lookup = (hostname, options, callback) => {
 };
 
 const cleanString = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
-const cleanPassword = (val) => (val || '').replace(/[\s"']/g, '').trim();
+const cleanPassword = (val) => {
+    if (!val) return '';
+    let cleaned = val.replace(/^["']|["']$/g, '').trim();
+    if (/^[a-zA-Z]{16}$/.test(cleaned)) {
+        return cleaned.replace(/(.{4})/g, '$1 ').trim();
+    }
+    return cleaned.replace(/\s+/g, ' ');
+};
 const cleanSecret = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
 
 module.exports = async (req, res) => {
@@ -113,10 +120,10 @@ module.exports = async (req, res) => {
         }
 
         console.log(`✅ Email sent successfully to ${recipient} (MessageID: ${info.messageId})`);
-        return res.status(200).json({ 
-            success: true, 
-            message: 'Email sent successfully via email-service', 
-            messageId: info.messageId 
+        return res.status(200).json({
+            success: true,
+            message: 'Email sent successfully via email-service',
+            messageId: info.messageId
         });
     } catch (error) {
         console.error('❌ Error sending email in email-service:', error.message);

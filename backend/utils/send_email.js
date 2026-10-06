@@ -9,7 +9,14 @@ try {
 }
 
 const cleanString = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
-const cleanPassword = (val) => (val || '').replace(/[\s"']/g, '').trim();
+const cleanPassword = (val) => {
+    if (!val) return '';
+    let cleaned = val.replace(/^["']|["']$/g, '').trim();
+    if (/^[a-zA-Z]{16}$/.test(cleaned)) {
+        return cleaned.replace(/(.{4})/g, '$1 ').trim();
+    }
+    return cleaned.replace(/\s+/g, ' ');
+};
 const cleanSecret = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
 
 // ✅ VALIDATION: Check if email service is configured (via Vercel HTTP service or direct SMTP)
@@ -101,7 +108,7 @@ const sendViaLocalEmailService = (mailOptions, smtpConfig) => {
         };
 
         const mockRes = {
-            setHeader: () => {},
+            setHeader: () => { },
             status: (statusCode) => ({
                 json: (data) => {
                     if (statusCode >= 200 && statusCode < 300 && data.success) {
@@ -279,7 +286,7 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
             const config = await SystemConfig.findOne();
             if (config && config.smtpUser && config.smtpPass) {
                 const decryptedPass = decrypt(config.smtpPass);
-                
+
                 const cleanUser = cleanString(config.smtpUser);
                 const cleanPass = cleanPassword(decryptedPass);
                 const isGmail = (config.smtpHost || 'smtp.gmail.com').includes('gmail');
