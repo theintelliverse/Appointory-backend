@@ -779,10 +779,10 @@ exports.createClinicalTemplate = async (req, res) => {
         if (!user) return res.status(404).json({ success: false, message: "Doctor not found" });
 
         const newTemplate = {
-            name,
-            drugs,
-            instruction,
-            category: category || 'General'
+            name: name?.trim() || 'Untitled Protocol',
+            drugs: drugs?.trim() || '',
+            instruction: instruction?.trim() || '',
+            category: (category && category.trim()) ? category.trim() : 'General'
         };
 
         user.templates = user.templates || [];
@@ -815,10 +815,12 @@ exports.updateClinicalTemplate = async (req, res) => {
         }
         if (!template) return res.status(404).json({ success: false, message: "Template not found" });
 
-        if (name) template.name = name;
-        if (drugs) template.drugs = drugs;
-        if (instruction !== undefined) template.instruction = instruction;
-        if (category) template.category = category;
+        if (name !== undefined) template.name = name.trim();
+        if (drugs !== undefined) template.drugs = drugs.trim();
+        if (instruction !== undefined) template.instruction = instruction.trim();
+        if (category !== undefined) {
+            template.category = (category && category.trim()) ? category.trim() : 'General';
+        }
 
         await user.save();
 

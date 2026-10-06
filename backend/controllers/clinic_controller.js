@@ -16,6 +16,29 @@ exports.getClinicProfile = async (req, res) => {
             });
         }
 
+        if (!clinic.slug) {
+            const raw = `${clinic.name || 'clinic'} ${clinic.city || ''}`.trim();
+            const slugify = (text) => text.toString().toLowerCase().trim()
+                .replace(/\s+/g, '-')
+                .replace(/[^\w\-]+/g, '')
+                .replace(/\-\-+/g, '-')
+                .replace(/^-+|-+$/g, '');
+            let generatedSlug = slugify(raw);
+            if (!generatedSlug || generatedSlug === 'clinic') {
+                generatedSlug = `clinic-${clinic.clinicCode ? clinic.clinicCode.toLowerCase() : clinic._id.toString().slice(-6)}`;
+            }
+            const existing = await Clinic.findOne({ slug: generatedSlug, _id: { $ne: clinic._id } });
+            if (existing) {
+                generatedSlug = `${generatedSlug}-${clinic.clinicCode ? clinic.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
+            }
+            clinic.slug = generatedSlug;
+            if (clinic.publicListingConsent === undefined || clinic.publicListingConsent === null) {
+                clinic.publicListingConsent = true;
+                clinic.publicListingConsentDate = new Date();
+            }
+            await clinic.save();
+        }
+
         const InventoryItem = require('../models/InventoryItem');
         const inventory = await InventoryItem.find({ clinicId: req.user.clinicId });
 
@@ -899,6 +922,30 @@ exports.getClinicSeo = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Clinic not found' });
         }
 
+        // 🔑 Auto-generate slug if missing on clinic
+        if (!clinic.slug) {
+            const raw = `${clinic.name || 'clinic'} ${clinic.city || ''}`.trim();
+            const slugify = (text) => text.toString().toLowerCase().trim()
+                .replace(/\s+/g, '-')
+                .replace(/[^\w\-]+/g, '')
+                .replace(/\-\-+/g, '-')
+                .replace(/^-+|-+$/g, '');
+            let generatedSlug = slugify(raw);
+            if (!generatedSlug || generatedSlug === 'clinic') {
+                generatedSlug = `clinic-${clinic.clinicCode ? clinic.clinicCode.toLowerCase() : clinic._id.toString().slice(-6)}`;
+            }
+            const existing = await Clinic.findOne({ slug: generatedSlug, _id: { $ne: clinic._id } });
+            if (existing) {
+                generatedSlug = `${generatedSlug}-${clinic.clinicCode ? clinic.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
+            }
+            clinic.slug = generatedSlug;
+            if (clinic.publicListingConsent === undefined || clinic.publicListingConsent === null) {
+                clinic.publicListingConsent = true;
+                clinic.publicListingConsentDate = new Date();
+            }
+            await clinic.save();
+        }
+
         const baseUrl = process.env.PUBLIC_SITE_URL || 'https://appointory.in';
         const effectiveSeo = clinic.getEffectiveSeo();
 
@@ -910,6 +957,7 @@ exports.getClinicSeo = async (req, res) => {
                 city: clinic.city || '',
                 address: clinic.address,
                 contactPhone: clinic.contactPhone,
+                clinicCode: clinic.clinicCode,
                 openingTime: clinic.openingTime,
                 closingTime: clinic.closingTime,
                 workingDays: clinic.workingDays,
@@ -954,8 +1002,16 @@ exports.updateClinicSeo = async (req, res) => {
             noindex,
             slug,
             confirmSlugChange,
-            city
+            city,
+            publicListingConsent
         } = req.body;
+
+        if (publicListingConsent !== undefined) {
+            clinic.publicListingConsent = Boolean(publicListingConsent);
+            if (clinic.publicListingConsent && !clinic.publicListingConsentDate) {
+                clinic.publicListingConsentDate = new Date();
+            }
+        }
 
         // Consent Check: Reject noindex=false if consent is not granted
         const willBeIndexed = noindex === false || noindex === 'false';

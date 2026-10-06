@@ -1,4 +1,19 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
+
+// 🌐 Force IPv4 first
+try {
+    dns.setDefaultResultOrder('ipv4first');
+} catch (e) {}
+
+const ipv4Lookup = (hostname, options, callback) => {
+    const cb = typeof options === 'function' ? options : callback;
+    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+        if (typeof cb === 'function') {
+            cb(err, address, family || 4);
+        }
+    });
+};
 
 const cleanString = (val) => (val || '').replace(/^["']|["']$/g, '').trim();
 const cleanPassword = (val) => (val || '').replace(/[\s"']/g, '').trim();
@@ -39,7 +54,6 @@ module.exports = async (req, res) => {
     }
 
     // Determine credentials and configuration
-    // Prioritize cleaned custom config, fallback to environment variables
     const customUser = smtpConfig?.auth?.user ? cleanString(smtpConfig.auth.user) : null;
     const customPass = smtpConfig?.auth?.pass ? cleanPassword(smtpConfig.auth.pass) : null;
     const envUser = cleanString(process.env.EMAIL_USER);
@@ -54,40 +68,58 @@ module.exports = async (req, res) => {
 
     const host = smtpConfig?.host || 'smtp.gmail.com';
     const isExplicit587 = Number(smtpConfig?.port) === 587;
-    const port = smtpConfig?.port ? Number(smtpConfig.port) : (isExplicit587 ? 587 : 465);
-    const secure = smtpConfig?.secure !== undefined ? Boolean(smtpConfig.secure) : (port === 465);
+    const primaryPort = smtpConfig?.port ? Number(smtpConfig.port) : (isExplicit587 ? 587 : 465);
+    const primarySecure = smtpConfig?.secure !== undefined ? Boolean(smtpConfig.secure) : (primaryPort === 465);
 
-    const transporterConfig = {
-        host,
-        port,
-        secure,
-        auth: {
-            user: authUser,
-            pass: authPass
-        },
-        tls: {
-            rejectUnauthorized: false
-        },
-        connectionTimeout: 12000,
-        socketTimeout: 12000
+    const buildTransporter = (port, secure) => {
+        return nodemailer.createTransport({
+            host,
+            port,
+            secure,
+            family: 4,
+            auth: {
+                user: authUser,
+                pass: authPass
+            },
+            tls: {
+                rejectUnauthorized: false,
+                servername: host
+            },
+            connectionTimeout: 15000,
+            socketTimeout: 15000,
+            lookup: ipv4Lookup
+        });
+    };
+
+    const mailOptions = {
+        from: `"Appointory Support" <${authUser}>`,
+        to: recipient,
+        subject: subject,
+        html: html,
+        attachments: attachments || []
     };
 
     try {
-        const transporter = nodemailer.createTransport(transporterConfig);
+        let transporter = buildTransporter(primaryPort, primarySecure);
+        let info;
+        try {
+            info = await transporter.sendMail(mailOptions);
+        } catch (firstErr) {
+            console.warn(`⚠️ Primary send on port ${primaryPort} failed (${firstErr.code || firstErr.message}). Retrying on alternate port...`);
+            const fallbackPort = primaryPort === 465 ? 587 : 465;
+            const fallbackSecure = fallbackPort === 465;
+            transporter = buildTransporter(fallbackPort, fallbackSecure);
+            info = await transporter.sendMail(mailOptions);
+        }
 
-        const mailOptions = {
-            from: `"Appointory Support" <${authUser}>`,
-            to: recipient,
-            subject: subject,
-            html: html,
-            attachments: attachments || []
-        };
-
-        const info = await transporter.sendMail(mailOptions);
         console.log(`✅ Email sent successfully to ${recipient} (MessageID: ${info.messageId})`);
-        return res.status(200).json({ success: true, message: 'Email sent successfully via Vercel', messageId: info.messageId });
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Email sent successfully via email-service', 
+            messageId: info.messageId 
+        });
     } catch (error) {
-        console.error('Error sending email:', error.message);
+        console.error('❌ Error sending email in email-service:', error.message);
         return res.status(500).json({
             success: false,
             message: error.message,

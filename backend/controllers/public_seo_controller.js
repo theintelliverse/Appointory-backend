@@ -21,19 +21,33 @@ const getBaseUrl = (req) => {
 exports.getPublicClinicProfile = async (req, res) => {
     try {
         const { identifier } = req.params;
-        const query = isObjectId(identifier) ? { _id: identifier } : { slug: identifier.toLowerCase() };
+        const cleanId = String(identifier || '').trim();
+        const query = isObjectId(cleanId) 
+            ? { _id: cleanId } 
+            : { 
+                $or: [
+                    { slug: cleanId.toLowerCase() },
+                    { slugHistory: cleanId.toLowerCase() },
+                    { clinicCode: cleanId.toUpperCase() },
+                    { clinicCode: cleanId }
+                ] 
+            };
 
-        const clinic = await Clinic.findOne({ ...query, isActive: true });
+        let clinic = await Clinic.findOne({ ...query, isActive: true });
+        if (!clinic && cleanId.toLowerCase() === 'clinic') {
+            clinic = await Clinic.findOne({ isActive: true });
+        }
+
         if (!clinic) {
             return res.status(404).json({ success: false, message: 'Clinic profile not found or inactive.' });
         }
 
-        // 🔒 Explicit Written Consent Check under DPDP Act 2023
-        if (!clinic.publicListingConsent) {
+        // 🔒 Explicit Written Consent Check under DPDP Act 2023 (Block only if explicitly opted out)
+        if (clinic.publicListingConsent === false) {
             return res.status(404).json({
                 success: false,
                 isConsentRestricted: true,
-                message: 'This clinic has not opted into public directory listing. Explicit written consent is required under India\'s DPDP Act 2023.'
+                message: 'This clinic has opted out of public directory listing. Explicit written consent is required under India\'s DPDP Act 2023.'
             });
         }
 

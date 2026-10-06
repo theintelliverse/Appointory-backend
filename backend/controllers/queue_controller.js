@@ -808,6 +808,26 @@ exports.approvePatient = async (req, res) => {
                 const isFutureDay = entryDateStart.getTime() > todayStart.getTime();
                 const isPastDay = entryDateStart.getTime() < todayStart.getTime();
 
+                // If consultation is completed, cancelled, or the appointment day has already passed:
+                if (entry.status === 'Completed' || entry.status === 'Cancelled' || isPastDay) {
+                    if (isPastDay && (entry.status === 'Waiting' || entry.status === 'Scheduled')) {
+                        entry.status = 'Completed';
+                        await entry.save().catch(() => {});
+                    }
+                    return res.status(200).json({
+                        success: true,
+                        isCompleted: true,
+                        message: 'This consultation has concluded.',
+                        data: {
+                            patientName: entry.patientName,
+                            tokenNumber: entry.tokenNumber,
+                            status: entry.status || 'Completed',
+                            clinicName: entry.clinicId?.name || 'Clinic',
+                            isPastDay: true
+                        }
+                    });
+                }
+
                 // Calculate start and end of that specific target day
                 const targetDayStart = new Date(entryDateStart);
                 const targetDayEnd = new Date(targetDayStart);
@@ -1399,6 +1419,104 @@ exports.approvePatient = async (req, res) => {
                     avgWait = Math.round(totalWait / waitingPatients.length);
                 }
 
+                // 🔔 Dynamic Actionable Doctor Alerts (Only real new patient requests & items needing review)
+                const reminders = [];
+
+                // 1. New Patient Requests (Online self check-ins or appointment bookings pending approval)
+                const pendingRequests = await Queue.find({
+                    clinicId,
+                    doctorId,
+                    $or: [
+                        { isApproved: false },
+                        { status: 'Pending-Approval' }
+                    ]
+                }).sort({ createdAt: -1 }).limit(5);
+
+                for (const item of pendingRequests) {
+                    const isAppt = item.visitType === 'Appointment';
+                    reminders.push({
+                        id: `req-${item._id}`,
+                        queueId: item._id,
+                        type: 'patient_request',
+                        title: isAppt ? 'New appointment request' : 'New patient request',
+                        patientName: item.patientName ? `${item.patientName}${item.tokenNumber ? ` (#${item.tokenNumber})` : ''}` : 'New Patient',
+                        time: item.appointmentDate 
+                            ? new Date(item.appointmentDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+                            : 'Pending Approval',
+                        color: 'blue'
+                    });
+                }
+
+                // 2. Lab Reports to Review (In-house lab tests completed for this doctor)
+                const labCompletedQueue = await Queue.find({
+                    clinicId,
+                    doctorId,
+                    currentStage: 'Lab-Completed',
+                    status: { $in: ['Waiting', 'In-Consultation'] }
+                }).sort({ updatedAt: -1 }).limit(4);
+
+                for (const item of labCompletedQueue) {
+                    reminders.push({
+                        id: `lab-${item._id}`,
+                        queueId: item._id,
+                        type: 'lab',
+                        title: `Review lab report${item.requiredTest ? `: ${item.requiredTest}` : ''}`,
+                        patientName: item.patientName || 'Patient',
+                        time: 'Report Ready',
+                        color: 'red'
+                    });
+                }
+
+                // 3. External Connected Lab Reports to Review (Completed within last 48 hours)
+                try {
+                    const ExternalLabRequest = require('../models/ExternalLabRequest');
+                    const recentExternalLabs = await ExternalLabRequest.find({
+                        clinicId,
+                        status: 'Completed',
+                        completedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
+                    }).sort({ completedAt: -1 }).limit(3);
+
+                    for (const ext of recentExternalLabs) {
+                        const exists = reminders.some(r => r.queueId && String(r.queueId) === String(ext.queueId));
+                        if (!exists) {
+                            reminders.push({
+                                id: `extlab-${ext._id}`,
+                                queueId: ext.queueId || null,
+                                type: 'lab',
+                                title: `Review lab report: ${ext.testName || 'Test'}`,
+                                patientName: ext.patientName || 'Patient',
+                                time: 'Report Ready',
+                                color: 'red'
+                            });
+                        }
+                    }
+                } catch (e) {
+                    // silently handle
+                }
+
+                // 4. New Patient Reviews/Feedback to check (within last 7 days)
+                try {
+                    const Review = require('../models/Review');
+                    const recentReviews = await Review.find({
+                        targetId: doctorId,
+                        targetType: 'doctor',
+                        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+                    }).sort({ createdAt: -1 }).limit(2);
+
+                    for (const rev of recentReviews) {
+                        reminders.push({
+                            id: `rev-${rev._id}`,
+                            type: 'review',
+                            title: `Review patient rating: ${rev.score}★`,
+                            patientName: `${rev.patientName || 'Patient'}${rev.review ? ` - "${rev.review.slice(0, 25)}..."` : ''}`,
+                            time: 'Patient Feedback',
+                            color: 'orange'
+                        });
+                    }
+                } catch (e) {
+                    // silently handle
+                }
+
                 res.status(200).json({
                     success: true,
                     data: {
@@ -1409,12 +1527,7 @@ exports.approvePatient = async (req, res) => {
                             pendingFollowUps: pendingFollowUps
                         },
                         queue: queueWithWait,
-                        reminders: [
-                            { id: 1, type: 'lab', title: 'Review lab reports', patient: 'Rahul Sharma', time: 'Today, 12:00 PM', color: 'red' },
-                            { id: 2, type: 'followup', title: 'Follow up', patient: 'Sneha Patel', time: 'Tomorrow, 10:30 AM', color: 'orange' },
-                            { id: 3, type: 'prescription', title: 'Pending prescriptions', patient: '3 prescriptions to complete', time: 'Today', color: 'purple' },
-                            { id: 4, type: 'patient', title: 'Patient due for follow up', patient: 'Anita Gupta', time: '24 May 2025', color: 'blue' }
-                        ]
+                        reminders
                     }
                 });
             } catch (error) {

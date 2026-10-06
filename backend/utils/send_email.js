@@ -26,8 +26,18 @@ const validateEmailConfig = () => {
     return true;
 };
 
-// Create transporter (Using Gmail)
-const createTransporter = () => {
+// 🌐 Bulletproof IPv4 DNS resolver to avoid IPv6 ENETUNREACH
+const ipv4Lookup = (hostname, options, callback) => {
+    const cb = typeof options === 'function' ? options : callback;
+    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+        if (typeof cb === 'function') {
+            cb(err, address, family || 4);
+        }
+    });
+};
+
+// Create transporter with specific port & protocol
+const createTransporterWithPort = (port = 465, secure = true) => {
     const user = cleanString(process.env.EMAIL_USER);
     const pass = cleanPassword(process.env.EMAIL_PASS);
 
@@ -37,44 +47,85 @@ const createTransporter = () => {
 
     return nodemailer.createTransport({
         host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
+        port,
+        secure,
+        family: 4,
         auth: {
             user,
             pass,
         },
         tls: {
-            // Do not fail on invalid certs
-            rejectUnauthorized: false
+            rejectUnauthorized: false,
+            servername: 'smtp.gmail.com'
         },
-        // Fast connection timeout so server doesn't hang on environments blocking SMTP ports
         connectionTimeout: 15000,
         socketTimeout: 15000,
-        lookup: (hostname, options, callback) => {
-            dns.lookup(hostname, { family: 4 }, callback);
-        }
+        lookup: ipv4Lookup
     });
 };
+
+// Create transporter (Using Gmail default port 465)
+const createTransporter = () => createTransporterWithPort(465, true);
 
 let transporter = null;
 let emailServiceReady = false;
 let isInitializing = false;
 
-// Primary email sender using the dedicated Vercel email service
-const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
-    const vercelUrl = cleanString(process.env.EMAIL_SERVICE_URL);
-    const vercelSecret = cleanSecret(process.env.EMAIL_SERVICE_SECRET);
+// Reference to email-service handler
+let localEmailServiceHandler = null;
+try {
+    localEmailServiceHandler = require('../../email-service/api/send');
+} catch (e) {
+    // Standalone deployment fallback
+}
 
-    if (!vercelUrl) {
-        throw new Error('EMAIL_SERVICE_URL is not configured.');
-    }
+const sendViaLocalEmailService = (mailOptions, smtpConfig) => {
+    return new Promise((resolve, reject) => {
+        if (!localEmailServiceHandler) {
+            return reject(new Error('Local email-service handler not found'));
+        }
 
-    console.log(`🔗 Sending email via Vercel email service to: ${mailOptions.to}`);
+        const mockReq = {
+            method: 'POST',
+            headers: {
+                'x-email-service-secret': cleanSecret(process.env.EMAIL_SERVICE_SECRET) || ''
+            },
+            body: {
+                to: mailOptions.to,
+                subject: mailOptions.subject,
+                html: mailOptions.html,
+                attachments: mailOptions.attachments || [],
+                secret: cleanSecret(process.env.EMAIL_SERVICE_SECRET) || '',
+                smtpConfig
+            }
+        };
+
+        const mockRes = {
+            setHeader: () => {},
+            status: (statusCode) => ({
+                json: (data) => {
+                    if (statusCode >= 200 && statusCode < 300 && data.success) {
+                        resolve(data);
+                    } else {
+                        reject(new Error(data.message || `email-service returned error code ${statusCode}`));
+                    }
+                },
+                end: () => resolve({ success: true })
+            })
+        };
+
+        localEmailServiceHandler(mockReq, mockRes).catch(reject);
+    });
+};
+
+// Always send email via email-service (remote Vercel HTTP relay or local email-service runner)
+const sendMailViaEmailService = async (mailOptions, smtpConfig = null) => {
+    const serviceUrl = cleanString(process.env.EMAIL_SERVICE_URL);
+    const serviceSecret = cleanSecret(process.env.EMAIL_SERVICE_SECRET);
 
     const user = cleanString(process.env.EMAIL_USER);
     const pass = cleanPassword(process.env.EMAIL_PASS);
 
-    // If no custom SMTP config provided, forward the default environment credentials (cleaned!)
     const activeSmtpConfig = smtpConfig || ((user && pass) ? {
         host: 'smtp.gmail.com',
         port: 465,
@@ -85,62 +136,60 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
         }
     } : null);
 
-    const response = await fetch(vercelUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-email-service-secret': vercelSecret || ''
-        },
-        body: JSON.stringify({
-            to: mailOptions.to,
-            subject: mailOptions.subject,
-            html: mailOptions.html,
-            attachments: mailOptions.attachments || [],
-            secret: vercelSecret || '',
-            smtpConfig: activeSmtpConfig
-        })
-    });
+    // 1. Primary: If EMAIL_SERVICE_URL is configured, dispatch HTTP request to email-service
+    if (serviceUrl) {
+        try {
+            console.log(`🔗 Sending email via email-service HTTP: ${serviceUrl} to: ${mailOptions.to}`);
+            const response = await fetch(serviceUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-email-service-secret': serviceSecret || ''
+                },
+                body: JSON.stringify({
+                    to: mailOptions.to,
+                    subject: mailOptions.subject,
+                    html: mailOptions.html,
+                    attachments: mailOptions.attachments || [],
+                    secret: serviceSecret || '',
+                    smtpConfig: activeSmtpConfig
+                })
+            });
 
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({ message: 'Unknown error' }));
-        throw new Error(`Vercel email service failed: ${errData.message || response.statusText}`);
+            if (response.ok) {
+                console.log(`✅ Email sent successfully via email-service to ${mailOptions.to}`);
+                return { messageId: 'email-service' };
+            }
+
+            const errData = await response.json().catch(() => ({ message: response.statusText }));
+            console.warn(`⚠️ Remote email-service HTTP returned (${response.status}): ${errData.message}. Trying local email-service runner...`);
+        } catch (httpErr) {
+            console.warn(`⚠️ Remote email-service unreachable at ${serviceUrl}:`, httpErr.message, '. Trying local email-service runner...');
+        }
     }
 
-    console.log(`✅ Email sent via Vercel email service to ${mailOptions.to}`);
-    return { messageId: 'vercel-email-service' };
+    // 2. Always use local email-service runner directly (guarantees email-service logic is always executed)
+    if (localEmailServiceHandler) {
+        console.log(`🚀 Executing email send via email-service runner for: ${mailOptions.to}`);
+        const result = await sendViaLocalEmailService(mailOptions, activeSmtpConfig);
+        console.log(`✅ Email sent successfully via email-service to ${mailOptions.to}`);
+        return result;
+    }
+
+    // 3. Last-resort direct transporter
+    const directTransporter = createTransporter();
+    if (directTransporter) {
+        return await directTransporter.sendMail(mailOptions);
+    }
+
+    throw new Error('No email delivery method available in email-service.');
 };
 
-// Wrapper: try Vercel email service first, fall back to direct SMTP
+// Transporter wrapper that always delegates to email-service
 const wrapTransporter = (transporterToWrap, smtpConfig = null) => {
-    const vercelUrl = cleanString(process.env.EMAIL_SERVICE_URL);
-
     return {
         sendMail: async (mailOptions) => {
-            let lastError = null;
-
-            // PRIMARY: Vercel email service (if configured)
-            if (vercelUrl) {
-                try {
-                    return await sendMailViaVercel(mailOptions, smtpConfig);
-                } catch (vercelError) {
-                    console.warn('⚠️ Vercel email service failed, falling back to direct SMTP:', vercelError.message);
-                    lastError = vercelError;
-                }
-            }
-
-            // FALLBACK: direct SMTP transporter
-            const activeTransporter = transporterToWrap || transporter || createTransporter();
-            if (activeTransporter) {
-                try {
-                    console.log(`📤 Sending email via direct SMTP to: ${mailOptions.to}`);
-                    return await activeTransporter.sendMail(mailOptions);
-                } catch (smtpError) {
-                    console.error('❌ Direct SMTP fallback also failed:', smtpError.message);
-                    lastError = smtpError;
-                }
-            }
-
-            throw new Error(lastError ? lastError.message : 'No email delivery method available. Set EMAIL_SERVICE_URL or configure SMTP credentials.');
+            return await sendMailViaEmailService(mailOptions, smtpConfig);
         }
     };
 };
@@ -230,7 +279,7 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
             const config = await SystemConfig.findOne();
             if (config && config.smtpUser && config.smtpPass) {
                 const decryptedPass = decrypt(config.smtpPass);
-
+                
                 const cleanUser = cleanString(config.smtpUser);
                 const cleanPass = cleanPassword(decryptedPass);
                 const isGmail = (config.smtpHost || 'smtp.gmail.com').includes('gmail');
@@ -251,15 +300,14 @@ const getTransporterAndSender = async (useSystemDefault = false) => {
                     host: smtpConfig.host,
                     port: smtpConfig.port,
                     secure: smtpConfig.secure,
+                    family: 4,
                     auth: smtpConfig.auth,
                     tls: {
                         rejectUnauthorized: false
                     },
                     connectionTimeout: 10000,
                     socketTimeout: 10000,
-                    lookup: (hostname, options, callback) => {
-                        dns.lookup(hostname, { family: 4 }, callback);
-                    }
+                    lookup: ipv4Lookup
                 });
                 return { activeTransporter: wrapTransporter(activeTransporter, smtpConfig), senderUser: config.smtpUser };
             }

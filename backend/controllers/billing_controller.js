@@ -70,11 +70,20 @@ exports.fetchPatientBillingData = async (req, res) => {
         .lean();
 
         // 4. Fetch All Active Doctors for Selection
-        const doctors = await User.find({
+        let doctors = await User.find({
             clinicId,
-            role: 'doctor',
-            isActive: true
-        }).select('_id name specialization').lean();
+            role: { $regex: /^doctor$/i },
+            isActive: { $ne: false },
+            deletedAt: null
+        }).select('_id name specialization isAvailable consultationFee medicalLicenseNumber').sort({ name: 1 }).lean();
+
+        if (!doctors || doctors.length === 0) {
+            doctors = await User.find({
+                clinicId,
+                role: { $in: ['doctor', 'admin'] },
+                deletedAt: null
+            }).select('_id name specialization isAvailable consultationFee medicalLicenseNumber').sort({ name: 1 }).lean();
+        }
 
         // 5. Calculate Online Pending Dues / Past Unpaid Invoices ("Paisa Bakki")
         const pastInvoicesWithDues = await PatientInvoice.find({
@@ -306,10 +315,16 @@ exports.createInvoice = async (req, res) => {
         const clinicGstin = clinicDoc?.gstin || '';
 
         let doctorLicenseNumber = '';
+        let resolvedDoctorName = doctorName || '';
         if (doctorId) {
-            const docUser = await User.findById(doctorId).select('medicalLicenseNumber').lean();
-            if (docUser?.medicalLicenseNumber) {
-                doctorLicenseNumber = docUser.medicalLicenseNumber;
+            const docUser = await User.findById(doctorId).select('name specialization medicalLicenseNumber').lean();
+            if (docUser) {
+                if (!resolvedDoctorName) {
+                    resolvedDoctorName = docUser.name;
+                }
+                if (docUser.medicalLicenseNumber) {
+                    doctorLicenseNumber = docUser.medicalLicenseNumber;
+                }
             }
         }
 
@@ -365,7 +380,7 @@ exports.createInvoice = async (req, res) => {
             patientName: patient?.name || patientName,
             patientPhone: cleanPhone || patientPhone,
             doctorId: doctorId || null,
-            doctorName: doctorName || '',
+            doctorName: resolvedDoctorName || '',
             doctorLicenseNumber,
             clinicGstin,
             billingType,
@@ -929,6 +944,51 @@ exports.verifyPublicInvoice = async (req, res) => {
             verified: false,
             message: "Internal server error during invoice verification: " + error.message
         });
+    }
+};
+
+// --- 🩺 FETCH DOCTORS FOR BILLING SELECTION ---
+exports.getBillingDoctors = async (req, res) => {
+    try {
+        const clinicId = req.user.clinicId;
+        if (!clinicId) {
+            return res.status(400).json({ success: false, message: "Clinic ID missing from session." });
+        }
+
+        // 1. First, search for active doctors
+        let doctors = await User.find({
+            clinicId,
+            role: { $regex: /^doctor$/i },
+            isActive: { $ne: false },
+            deletedAt: null
+        }).select('_id name specialization isAvailable consultationFee medicalLicenseNumber').sort({ name: 1 }).lean();
+
+        // 2. If none found with isActive: true, search for all users with role 'doctor' in this clinic
+        if (!doctors || doctors.length === 0) {
+            doctors = await User.find({
+                clinicId,
+                role: { $regex: /^doctor$/i },
+                deletedAt: null
+            }).select('_id name specialization isAvailable consultationFee medicalLicenseNumber').sort({ name: 1 }).lean();
+        }
+
+        // 3. Fallback: if clinic hasn't configured doctor roles yet, include clinic admin as practitioner
+        if (!doctors || doctors.length === 0) {
+            doctors = await User.find({
+                clinicId,
+                role: 'admin',
+                deletedAt: null
+            }).select('_id name specialization isAvailable consultationFee medicalLicenseNumber').sort({ name: 1 }).lean();
+        }
+
+        return res.status(200).json({
+            success: true,
+            count: doctors.length,
+            doctors
+        });
+    } catch (err) {
+        console.error("Error fetching billing doctors:", err);
+        return res.status(500).json({ success: false, message: err.message });
     }
 };
 

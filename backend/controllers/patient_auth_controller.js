@@ -803,7 +803,16 @@ exports.getPatientAppointments = async (req, res) => {
                 patientPhone: q.patientPhone || patient?.phone || '',
                 tokenNumber: q.tokenNumber || null,
                 appointmentDate: q.appointmentDate || q.createdAt,
-                status: q.status || (q.isApproved ? 'Scheduled' : 'Pending-Approval'),
+                status: (() => {
+                    const appDate = new Date(q.appointmentDate || q.createdAt);
+                    appDate.setHours(0, 0, 0, 0);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    if (appDate.getTime() < today.getTime() && (q.status === 'Waiting' || q.status === 'Scheduled' || !q.status)) {
+                        return 'Completed';
+                    }
+                    return q.status || (q.isApproved ? 'Scheduled' : 'Pending-Approval');
+                })(),
                 isApproved: Boolean(q.isApproved),
                 visitType: q.visitType || 'Appointment',
                 reason: q.reason || '',
@@ -827,7 +836,16 @@ exports.getPatientAppointments = async (req, res) => {
                     patientPhone: patient?.phone || '',
                     tokenNumber: item.tokenNumber || null,
                     appointmentDate: item.appointmentDate || item.createdAt,
-                    status: item.status || 'Scheduled',
+                    status: (() => {
+                        const appDate = new Date(item.appointmentDate || item.createdAt);
+                        appDate.setHours(0, 0, 0, 0);
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        if (appDate.getTime() < today.getTime() && (item.status === 'Waiting' || item.status === 'Scheduled' || !item.status)) {
+                            return 'Completed';
+                        }
+                        return item.status || 'Scheduled';
+                    })(),
                     isApproved: true,
                     visitType: 'Appointment',
                     reason: item.reason || '',

@@ -130,33 +130,32 @@ function slugify(text) {
     .replace(/^-+|-+$/g, '');
 }
 
-// Pre-save hook: auto-generate slug and maintain slugHistory
+// Pre-save hook: auto-generate slug and maintain slugHistory (async hook compatible with Mongoose)
 clinicSchema.pre('save', async function(next) {
-  try {
-    if (this.isModified('slug') && !this.isNew) {
-      const original = await this.constructor.findById(this._id).select('slug slugHistory');
-      if (original && original.slug && original.slug !== this.slug) {
-        if (!this.slugHistory) this.slugHistory = [];
-        if (!this.slugHistory.includes(original.slug)) {
-          this.slugHistory.push(original.slug);
-        }
+  if (this.isModified('slug') && !this.isNew) {
+    const original = await this.constructor.findById(this._id).select('slug slugHistory');
+    if (original && original.slug && original.slug !== this.slug) {
+      if (!this.slugHistory) this.slugHistory = [];
+      if (!this.slugHistory.includes(original.slug)) {
+        this.slugHistory.push(original.slug);
       }
     }
+  }
 
-    if (!this.slug) {
-      const cityPart = this.city || (this.address ? this.address.split(',').pop().trim() : '');
-      const raw = `${this.name} ${cityPart}`.trim();
-      let generatedSlug = slugify(raw) || `clinic-${Date.now()}`;
-      
-      const existing = await this.constructor.findOne({ slug: generatedSlug, _id: { $ne: this._id } });
-      if (existing) {
-        generatedSlug = `${generatedSlug}-${this.clinicCode ? this.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
-      }
-      this.slug = generatedSlug;
+  if (!this.slug) {
+    const cityPart = this.city || (this.address ? this.address.split(',').pop().trim() : '');
+    const raw = `${this.name || 'clinic'} ${cityPart}`.trim();
+    let generatedSlug = slugify(raw) || `clinic-${Date.now()}`;
+    
+    const existing = await this.constructor.findOne({ slug: generatedSlug, _id: { $ne: this._id } });
+    if (existing) {
+      generatedSlug = `${generatedSlug}-${this.clinicCode ? this.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
     }
+    this.slug = generatedSlug;
+  }
+
+  if (typeof next === 'function') {
     next();
-  } catch (err) {
-    next(err);
   }
 });
 
