@@ -40,16 +40,16 @@ const createTransporter = () => {
 let transporter = null;
 let emailServiceReady = false;
 
-// Fallback email sender using Vercel HTTPS API
+// Primary email sender using the dedicated Vercel email service
 const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
     const vercelUrl = process.env.EMAIL_SERVICE_URL;
     const vercelSecret = process.env.EMAIL_SERVICE_SECRET;
 
     if (!vercelUrl) {
-        throw new Error('SMTP connection failed and EMAIL_SERVICE_URL is not configured for Vercel fallback.');
+        throw new Error('EMAIL_SERVICE_URL is not configured.');
     }
 
-    console.log(`🔗 Attempting to send email via Vercel fallback to: ${mailOptions.to}`);
+    console.log(`🔗 Sending email via Vercel email service to: ${mailOptions.to}`);
 
     const response = await fetch(vercelUrl, {
         method: 'POST',
@@ -62,7 +62,7 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
             subject: mailOptions.subject,
             html: mailOptions.html,
             attachments: mailOptions.attachments || [],
-            smtpConfig: smtpConfig // Pass down custom credentials if active
+            smtpConfig: smtpConfig
         })
     });
 
@@ -71,30 +71,34 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
         throw new Error(`Vercel email service failed: ${errData.message || response.statusText}`);
     }
 
-    console.log(`✅ Email sent successfully via Vercel fallback to ${mailOptions.to}`);
-    return { messageId: 'vercel-fallback' };
+    console.log(`✅ Email sent via Vercel email service to ${mailOptions.to}`);
+    return { messageId: 'vercel-email-service' };
 };
 
-// Wrapper to transparently fall back to Vercel if SMTP fails
+// Wrapper: try Vercel email service first, fall back to direct SMTP
 const wrapTransporter = (transporterToWrap, smtpConfig = null) => {
-    if (!transporterToWrap) {
-        return {
-            sendMail: async (mailOptions) => {
-                return sendMailViaVercel(mailOptions, smtpConfig);
-            }
-        };
-    }
+    const vercelUrl = process.env.EMAIL_SERVICE_URL;
 
-    const originalSendMail = transporterToWrap.sendMail.bind(transporterToWrap);
-    transporterToWrap.sendMail = async (mailOptions) => {
-        try {
-            return await originalSendMail(mailOptions);
-        } catch (smtpError) {
-            console.warn('⚠️ SMTP send failed, trying Vercel fallback:', smtpError.message);
-            return await sendMailViaVercel(mailOptions, smtpConfig);
+    return {
+        sendMail: async (mailOptions) => {
+            // PRIMARY: Vercel email service (if configured)
+            if (vercelUrl) {
+                try {
+                    return await sendMailViaVercel(mailOptions, smtpConfig);
+                } catch (vercelError) {
+                    console.warn('⚠️ Vercel email service failed, falling back to direct SMTP:', vercelError.message);
+                }
+            }
+
+            // FALLBACK: direct SMTP transporter
+            if (transporterToWrap) {
+                console.log(`📤 Sending email via direct SMTP to: ${mailOptions.to}`);
+                return await transporterToWrap.sendMail(mailOptions);
+            }
+
+            throw new Error('No email delivery method available. Set EMAIL_SERVICE_URL or configure SMTP credentials.');
         }
     };
-    return transporterToWrap;
 };
 
 // Initialize transporter safely with proper async handling
