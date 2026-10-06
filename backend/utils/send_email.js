@@ -1,10 +1,20 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
 
-// ✅ VALIDATION: Check if Gmail credentials are configured
+// 🌐 Force IPv4 first to prevent ENETUNREACH errors in production (Render, Docker, etc.)
+try {
+    dns.setDefaultResultOrder('ipv4first');
+} catch (e) {
+    // Ignore on older Node versions
+}
+
+// ✅ VALIDATION: Check if email service is configured (via Vercel HTTP service or direct SMTP)
 const validateEmailConfig = () => {
+    if (process.env.EMAIL_SERVICE_URL) {
+        return true;
+    }
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.error('❌ EMAIL CONFIGURATION ERROR: Missing EMAIL_USER or EMAIL_PASS in environment variables');
+        console.error('❌ EMAIL CONFIGURATION ERROR: Missing EMAIL_USER/EMAIL_PASS and EMAIL_SERVICE_URL in environment variables');
         return false;
     }
     return true;
@@ -28,9 +38,9 @@ const createTransporter = () => {
             // Do not fail on invalid certs
             rejectUnauthorized: false
         },
-        // Add connection timeout to prevent hanging
-        connectionTimeout: 50000,
-        socketTimeout: 50000,
+        // Fast connection timeout so server doesn't hang on environments blocking SMTP ports
+        connectionTimeout: 15000,
+        socketTimeout: 15000,
         lookup: (hostname, options, callback) => {
             dns.lookup(hostname, { family: 4 }, callback);
         }
@@ -39,6 +49,7 @@ const createTransporter = () => {
 
 let transporter = null;
 let emailServiceReady = false;
+let isInitializing = false;
 
 // Primary email sender using the dedicated Vercel email service
 const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
@@ -51,6 +62,14 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
 
     console.log(`🔗 Sending email via Vercel email service to: ${mailOptions.to}`);
 
+    // If no custom SMTP config provided, forward the default environment credentials
+    const activeSmtpConfig = smtpConfig || ((process.env.EMAIL_USER && process.env.EMAIL_PASS) ? {
+        auth: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS
+        }
+    } : null);
+
     const response = await fetch(vercelUrl, {
         method: 'POST',
         headers: {
@@ -62,7 +81,7 @@ const sendMailViaVercel = async (mailOptions, smtpConfig = null) => {
             subject: mailOptions.subject,
             html: mailOptions.html,
             attachments: mailOptions.attachments || [],
-            smtpConfig: smtpConfig
+            smtpConfig: activeSmtpConfig
         })
     });
 
@@ -103,29 +122,43 @@ const wrapTransporter = (transporterToWrap, smtpConfig = null) => {
 
 // Initialize transporter safely with proper async handling
 const initializeEmailService = async () => {
+    if (emailServiceReady) {
+        return;
+    }
+    if (isInitializing) {
+        return;
+    }
+    isInitializing = true;
+
     try {
         if (!validateEmailConfig()) {
-            console.log('⚠️  Email service disabled: Credentials not configured');
+            console.log('⚠️  Email service disabled: Credentials or EMAIL_SERVICE_URL not configured');
+            isInitializing = false;
+            return;
+        }
+
+        // PRIMARY: If Vercel HTTP relay is configured, mark ready immediately without blocking on SMTP ports
+        if (process.env.EMAIL_SERVICE_URL) {
+            console.log(`📧 Email service initialized via HTTP Relay: ${process.env.EMAIL_SERVICE_URL}`);
+            emailServiceReady = true;
+            isInitializing = false;
             return;
         }
 
         transporter = createTransporter();
-        console.log('📧 Initializing email service...');
+        console.log('📧 Initializing direct SMTP email service...');
 
-        // Test connection with promise wrapper
+        // Test direct connection with promise wrapper
         return new Promise((resolve, reject) => {
             transporter.verify((error, success) => {
+                isInitializing = false;
                 if (error) {
                     console.error('❌ EMAIL TRANSPORTER VERIFICATION FAILED:', error.message);
                     console.error('📝 Troubleshooting Steps:');
-                    console.error('   1. Check your EMAIL_USER and EMAIL_PASS in environment variables');
-                    console.error('   2. If using Gmail with 2FA enabled:');
-                    console.error('      - Generate an App Password at: https://myaccount.google.com/apppasswords');
-                    console.error('      - Use the 16-character app password in EMAIL_PASS');
-                    console.error('   3. Check these specific Gmail security settings:');
-                    console.error('      - Go to: https://myaccount.google.com/security');
-                    console.error('      - Enable "Less secure app access" if 2FA is not enabled');
-                    console.error('      - Or use an App Password if 2FA is enabled');
+                    console.error('   1. Render and free cloud hosts block outbound SMTP ports 25, 465, and 587.');
+                    console.error('      Set EMAIL_SERVICE_URL in Render dashboard to use the Vercel HTTP relay.');
+                    console.error('   2. If running locally:');
+                    console.error('      - Check EMAIL_USER and EMAIL_PASS (use a 16-character Gmail App Password).');
                     transporter = null;
                     emailServiceReady = false;
                     reject(error);
@@ -138,22 +171,13 @@ const initializeEmailService = async () => {
             });
         });
     } catch (error) {
+        isInitializing = false;
         console.error('⚠️  EMAIL SERVICE INITIALIZATION ERROR:', error.message);
         transporter = null;
         emailServiceReady = false;
         throw error;
     }
 };
-
-// Initialize email service immediately (non-blocking with error handling)
-if (validateEmailConfig()) {
-    initializeEmailService().catch(error => {
-        console.error('⚠️  Email service will not be available:', error.message);
-        // Don't crash the app, just log a warning
-    });
-} else {
-    console.log('⚠️  Email service disabled: EMAIL_USER and EMAIL_PASS');
-}
 const { decrypt } = require('./crypto_helper');
 
 // Helper to resolve transporter dynamically
