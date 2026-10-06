@@ -289,7 +289,7 @@ const sanitizeMongo = require('./middlewares/mongo_sanitize');
 app.set('trust proxy', 1);
 app.use(securityHeaders);
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.options(/(.*)/, cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.use(sanitizeMongo);
 app.use('/api', globalApiLimiter);
