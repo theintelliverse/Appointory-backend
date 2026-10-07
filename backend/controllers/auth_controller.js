@@ -79,7 +79,7 @@ exports.registerClinic = async (req, res) => {
         }
 
         if (storedOtpDoc.attempts >= (storedOtpDoc.maxAttempts || 5)) {
-            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
+            await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
             return res.status(400).json({ success: false, message: "Too many failed attempts. Verification codes have been invalidated. Please request new codes." });
         }
 
@@ -102,7 +102,7 @@ exports.registerClinic = async (req, res) => {
             storedOtpDoc.attempts = (storedOtpDoc.attempts || 0) + 1;
             const remaining = Math.max(0, (storedOtpDoc.maxAttempts || 5) - storedOtpDoc.attempts);
             if (remaining <= 0) {
-                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => { });
+                await Otp.deleteOne({ _id: storedOtpDoc._id }).catch(() => {});
                 return res.status(400).json({ success: false, message: "Too many failed verification attempts. Please request new codes." });
             }
             await storedOtpDoc.save();
@@ -278,15 +278,17 @@ exports.getMe = async (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
     try {
-        const {
-            name, bio, education, experience, phoneNumber, profileImage,
-            clinicLocation, clinicContact, slug, consultationFee,
+        const { 
+            name, bio, education, experience, phoneNumber, profileImage, 
+            clinicLocation, clinicContact, slug, consultationFee, 
             medicalLicenseNumber, seoTitle, seoDescription,
             publicListingConsent
         } = req.body;
 
         // Format slug if provided
-        let formattedSlug = slug ? slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-') : undefined;
+        let formattedSlug = (slug && typeof slug === 'string' && slug.trim()) 
+            ? slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '') 
+            : undefined;
 
         if (formattedSlug) {
             const existingSlug = await User.findOne({
@@ -303,9 +305,8 @@ exports.updateProfile = async (req, res) => {
 
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
         const updatePayload = {
-            name, bio, education, experience, phoneNumber, profileImage,
+            name, bio, education, experience, phoneNumber, profileImage, 
             clinicLocation, clinicContact,
-            ...(formattedSlug && { slug: formattedSlug }),
             ...(consultationFee !== undefined && { consultationFee }),
             ...(medicalLicenseNumber !== undefined && { medicalLicenseNumber }),
             ...(seoTitle !== undefined && { seoTitle }),
@@ -320,9 +321,16 @@ exports.updateProfile = async (req, res) => {
             })
         };
 
+        const updateOperation = { $set: updatePayload };
+        if (formattedSlug) {
+            updateOperation.$set.slug = formattedSlug;
+        } else if (slug !== undefined && !formattedSlug) {
+            updateOperation.$unset = { slug: 1 };
+        }
+
         const updatedUser = await User.findByIdAndUpdate(
             req.user.id,
-            updatePayload,
+            updateOperation,
             { returnDocument: 'after', runValidators: true }
         ).select('-password');
 

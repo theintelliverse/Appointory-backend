@@ -60,13 +60,13 @@ const verifyAndConsumeOtp = async ({ identifier, type, otp, consume = true }) =>
 
     // Check expiry
     if (record.expiresAt < new Date()) {
-        await Otp.deleteOne({ _id: record._id }).catch(() => { });
+        await Otp.deleteOne({ _id: record._id }).catch(() => {});
         return { valid: false, message: 'OTP has expired. Please request a new code.' };
     }
 
     // Check attempts limit (Max 5 attempts)
     if (record.attempts >= (record.maxAttempts || 5)) {
-        await Otp.deleteOne({ _id: record._id }).catch(() => { });
+        await Otp.deleteOne({ _id: record._id }).catch(() => {});
         return { valid: false, message: 'Too many failed verification attempts. This OTP has been invalidated.' };
     }
 
@@ -103,7 +103,7 @@ const verifyAndConsumeOtp = async ({ identifier, type, otp, consume = true }) =>
         record.attempts = (record.attempts || 0) + 1;
         const remaining = Math.max(0, (record.maxAttempts || 5) - record.attempts);
         if (remaining <= 0) {
-            await Otp.deleteOne({ _id: record._id }).catch(() => { });
+            await Otp.deleteOne({ _id: record._id }).catch(() => {});
             return { valid: false, message: 'Too many failed verification attempts. This OTP has been invalidated.' };
         }
         await record.save();
@@ -112,7 +112,7 @@ const verifyAndConsumeOtp = async ({ identifier, type, otp, consume = true }) =>
 
     // Success: consume if required
     if (consume) {
-        await Otp.deleteOne({ _id: record._id }).catch(() => { });
+        await Otp.deleteOne({ _id: record._id }).catch(() => {});
     }
 
     return { valid: true };

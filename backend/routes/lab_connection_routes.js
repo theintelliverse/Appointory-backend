@@ -7,9 +7,12 @@ const ctrl = require('../controllers/lab_connection_controller');
 const { protect, authorize, protectLab } = require('../utils/auth_middleware');
 
 // =============================================
-// 🌐 PUBLIC — Any authenticated clinic user can search labs
+// 🌐 PUBLIC — Patients book direct appointments & search labs
 // =============================================
-router.get('/search', protect, ctrl.searchLabs);
+router.get('/search', ctrl.searchLabs);
+router.get('/public/labs', ctrl.getPublicLabsList);
+router.post('/public/book-appointment', ctrl.bookDirectLabAppointment);
+router.get('/lookup-patient/:phoneOrCode', protectLab, ctrl.lookupPatientForLab);
 
 // =============================================
 // 🏥 CLINIC ROUTES (Clinic Admin Only)

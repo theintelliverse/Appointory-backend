@@ -207,7 +207,24 @@ const getRatings = async (req, res) => {
         const reviews = await Review.find({ targetType, targetId })
             .select('score review isVerifiedPatient createdAt')
             .sort({ createdAt: -1 })
-            .limit(30);
+            .limit(50);
+
+        // Calculate score breakdown (5 to 1 stars)
+        const allRatings = await Review.find({ targetType, targetId }).select('score');
+        const breakdown = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+        allRatings.forEach(r => {
+            const sc = Math.round(r.score);
+            if (sc >= 1 && sc <= 5) breakdown[sc] = (breakdown[sc] || 0) + 1;
+        });
+
+        const totalRated = allRatings.length;
+        const percentageBreakdown = {
+            5: totalRated ? Math.round((breakdown[5] / totalRated) * 100) : 0,
+            4: totalRated ? Math.round((breakdown[4] / totalRated) * 100) : 0,
+            3: totalRated ? Math.round((breakdown[3] / totalRated) * 100) : 0,
+            2: totalRated ? Math.round((breakdown[2] / totalRated) * 100) : 0,
+            1: totalRated ? Math.round((breakdown[1] / totalRated) * 100) : 0,
+        };
 
         // 🔒 MEDICAL PRIVACY PROTECTION: Mask patient identity for public reviews
         const sanitizedReviews = reviews.map(r => ({
@@ -226,13 +243,15 @@ const getRatings = async (req, res) => {
         } else if (targetType === 'clinic') {
             targetEntity = await Clinic.findById(targetId).select('name rating address');
         } else if (targetType === 'lab') {
-            targetEntity = await IndependentLab.findById(targetId).select('labName rating address');
+            targetEntity = await IndependentLab.findById(targetId).select('labName rating address slug');
         }
 
         return res.status(200).json({
             success: true,
-            rating: targetEntity?.rating || { score: 0, count: 0 },
-            totalReviews: reviews.length,
+            rating: targetEntity?.rating || { score: 0, count: totalRated },
+            totalReviews: totalRated,
+            breakdown,
+            percentageBreakdown,
             reviews: sanitizedReviews
         });
     } catch (error) {
@@ -431,9 +450,9 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ name: regex }, { specialization: regex }] } : {})
             })
-                .populate('clinicId', 'name')
-                .select('name specialization rating profileImage clinicId')
-                .limit(10);
+            .populate('clinicId', 'name')
+            .select('name specialization rating profileImage clinicId')
+            .limit(10);
         }
 
         if (type === 'all' || type === 'clinic') {
@@ -441,8 +460,8 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ name: regex }, { address: regex }] } : {})
             })
-                .select('name address rating logo')
-                .limit(10);
+            .select('name address rating logo')
+            .limit(10);
         }
 
         if (type === 'all' || type === 'lab') {
@@ -450,8 +469,8 @@ const searchTargets = async (req, res) => {
                 isActive: true,
                 ...(queryStr ? { $or: [{ labName: regex }, { address: regex }] } : {})
             })
-                .select('labName address rating logo')
-                .limit(10);
+            .select('labName address rating logo')
+            .limit(10);
         }
 
         const results = [

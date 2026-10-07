@@ -283,7 +283,7 @@ exports.getAllClinics = async (req, res) => {
 
         const User = require('../models/User');
         
-        const clinics = await Clinic.find({ isActive: true }).select('_id name address contactPhone clinicCode openingTime closingTime breakStartTime breakEndTime slotDurationMinutes workingDays');
+        const clinics = await Clinic.find({ isActive: true }).select('_id name address contactPhone clinicCode openingTime closingTime breakStartTime breakEndTime slotDurationMinutes workingDays rating slug bio specialties');
         
         // For each clinic, fetch the count of active doctors
         const clinicsWithDoctorCount = await Promise.all(
@@ -330,7 +330,7 @@ exports.getClinicDoctors = async (req, res) => {
             clinicId,
             role: 'doctor',
             isActive: true
-        }).select('_id name specialization isAvailable liveUntilDate experience education bio profileImage clinicLocation clinicContact phoneNumber availableDays');
+        }).select('_id name specialization isAvailable liveUntilDate experience education bio profileImage clinicLocation clinicContact phoneNumber availableDays rating');
 
         console.log(`✅ Found ${doctors.length} doctors for clinic ${clinicId}`);
 
@@ -922,8 +922,8 @@ exports.getClinicSeo = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Clinic not found' });
         }
 
-        // 🔑 Auto-generate slug if missing on clinic
-        if (!clinic.slug) {
+        // 🔑 Auto-generate slug if missing on clinic or if generic 'clinic'
+        if (!clinic.slug || clinic.slug === 'clinic') {
             const raw = `${clinic.name || 'clinic'} ${clinic.city || ''}`.trim();
             const slugify = (text) => text.toString().toLowerCase().trim()
                 .replace(/\s+/g, '-')
@@ -937,6 +937,10 @@ exports.getClinicSeo = async (req, res) => {
             const existing = await Clinic.findOne({ slug: generatedSlug, _id: { $ne: clinic._id } });
             if (existing) {
                 generatedSlug = `${generatedSlug}-${clinic.clinicCode ? clinic.clinicCode.toLowerCase() : Math.floor(1000 + Math.random() * 9000)}`;
+            }
+            if (clinic.slug === 'clinic') {
+                if (!clinic.slugHistory) clinic.slugHistory = [];
+                if (!clinic.slugHistory.includes('clinic')) clinic.slugHistory.push('clinic');
             }
             clinic.slug = generatedSlug;
             if (clinic.publicListingConsent === undefined || clinic.publicListingConsent === null) {
@@ -968,7 +972,7 @@ exports.getClinicSeo = async (req, res) => {
                 seo: clinic.seo || {},
                 effectiveSeo,
                 publicUrl: `${baseUrl}/c/${clinic.slug}`,
-                bookingUrl: `${baseUrl}/c/${clinic.slug}?book=1`
+                bookingUrl: `${baseUrl}/book?clinicId=${clinic._id}&clinic=${clinic.slug || clinic.clinicCode}&utm_source=qr`
             }
         });
     } catch (error) {
@@ -1161,11 +1165,11 @@ exports.updateClinicSeo = async (req, res) => {
                 slug: clinic.slug,
                 slugHistory: clinic.slugHistory,
                 publicUrl: `${baseUrl}/c/${clinic.slug}`,
-                bookingUrl: `${baseUrl}/c/${clinic.slug}?book=1`
+                bookingUrl: `${baseUrl}/book?clinicId=${clinic._id}&clinic=${clinic.slug || clinic.clinicCode}&utm_source=qr`
             }
         });
     } catch (error) {
         console.error('❌ Error updating clinic SEO:', error);
         res.status(500).json({ success: false, message: error.message });
     }
-};
+};

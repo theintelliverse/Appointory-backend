@@ -42,12 +42,32 @@ exports.getPublicClinicProfile = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Clinic profile not found or inactive.' });
         }
 
-        // 🔒 Explicit Written Consent Check under DPDP Act 2023 (Block only if explicitly opted out)
-        if (clinic.publicListingConsent === false) {
-            return res.status(404).json({
-                success: false,
+        const isBookRequest = req.query.book === '1' || req.query.book === 'true';
+
+        // 🔒 Explicit Written Consent Check under DPDP Act 2023 (Allow booking and direct viewing with restricted indexation)
+        if (clinic.publicListingConsent === false && !isBookRequest) {
+            return res.status(200).json({
+                success: true,
                 isConsentRestricted: true,
-                message: 'This clinic has opted out of public directory listing. Explicit written consent is required under India\'s DPDP Act 2023.'
+                message: 'This clinic has opted out of public search directory indexation.',
+                data: {
+                    clinic: {
+                        _id: clinic._id,
+                        name: clinic.name,
+                        city: clinic.city || '',
+                        address: clinic.address,
+                        contactPhone: clinic.contactPhone,
+                        clinicCode: clinic.clinicCode,
+                        slug: clinic.slug,
+                        openingTime: clinic.openingTime,
+                        closingTime: clinic.closingTime,
+                        workingDays: clinic.workingDays
+                    },
+                    doctors: [],
+                    services: [],
+                    faqs: [],
+                    reviews: []
+                }
             });
         }
 
@@ -377,6 +397,24 @@ exports.getPublicLabProfile = async (req, res) => {
             } : {})
         };
 
+        if (lab.socialLinks) {
+            const sameAs = Object.values(lab.socialLinks).filter(link => Boolean(link && typeof link === 'string' && link.trim()));
+            if (sameAs.length > 0) jsonLd.sameAs = sameAs;
+        }
+
+        const jsonLdPayload = [jsonLd];
+        if (lab.videoUrl) {
+            jsonLdPayload.push({
+                "@context": "https://schema.org",
+                "@type": "VideoObject",
+                "name": `${lab.labName} - Diagnostic Facility & Laboratory Tour`,
+                "description": `Virtual laboratory tour and pathology equipment overview at ${lab.labName}.`,
+                "thumbnailUrl": [lab.logo || `${baseUrl}/assets/og-image-banner.jpg`],
+                "contentUrl": lab.videoUrl,
+                "embedUrl": lab.videoUrl
+            });
+        }
+
         res.status(200).json({
             success: true,
             data: {
@@ -391,7 +429,7 @@ exports.getPublicLabProfile = async (req, res) => {
                     isLivePaused,
                     isOpenToday: !isWeeklyOffToday && !todayHoliday && !isLivePaused
                 },
-                jsonLd,
+                jsonLd: jsonLdPayload,
                 meta: {
                     title: lab.seoTitle || `${lab.labName} - Diagnostic & Pathology Lab Services`,
                     description: lab.seoDescription || lab.bio || `Book blood tests & health checkups at ${lab.labName}. Reliable diagnostic reports & connected healthcare network.`,

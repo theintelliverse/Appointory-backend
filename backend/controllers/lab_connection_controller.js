@@ -109,7 +109,7 @@ exports.getClinicConnections = async (req, res) => {
                 const workingDays = lab.workingDays && lab.workingDays.length
                     ? lab.workingDays.map(d => d.toLowerCase())
                     : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
+                
                 const isWeeklyOff = !workingDays.includes(todayWeekday);
                 const holiday = leaveMap[lab._id.toString()];
 
@@ -306,9 +306,9 @@ exports.getLabTestRequests = async (req, res) => {
             notes: q.consultationNotes || '',
             queueId: q._id,
             status: q.currentStage === 'Lab-Pending' ? 'Pending' :
-                q.currentStage === 'Lab-Processing' ? 'Processing' :
+                    q.currentStage === 'Lab-Processing' ? 'Processing' :
                     q.currentStage === 'Lab-Completed' ? 'Completed' :
-                        q.currentStage === 'Lab-Rejected' ? 'Rejected' : 'Pending',
+                    q.currentStage === 'Lab-Rejected' ? 'Rejected' : 'Pending',
             createdAt: q.createdAt,
             updatedAt: q.updatedAt
         }));
@@ -400,12 +400,12 @@ exports.uploadReportForRequest = [
 
                 let targetPatient = null;
                 if (request.patientId) {
-                    try { targetPatient = await Patient.findById(request.patientId); } catch (_) { }
+                    try { targetPatient = await Patient.findById(request.patientId); } catch (_) {}
                 }
                 if (!targetPatient && request.queueId) {
                     const queueDoc = await Queue.findById(request.queueId);
                     if (queueDoc?.patientId) {
-                        try { targetPatient = await Patient.findById(queueDoc.patientId); } catch (_) { }
+                        try { targetPatient = await Patient.findById(queueDoc.patientId); } catch (_) {}
                     }
                 }
 
@@ -431,7 +431,7 @@ exports.uploadReportForRequest = [
                         documents: []
                     });
                 }
-
+                
                 const newDocuments = newReports.map(rep => ({
                     visitId: request.queueId || null,
                     title: rep.title,
@@ -440,7 +440,7 @@ exports.uploadReportForRequest = [
                     fileType: rep.fileType,
                     uploadedAt: rep.uploadedAt
                 }));
-
+                
                 targetPatient.documents.push(...newDocuments);
                 await targetPatient.save();
 
@@ -475,23 +475,27 @@ exports.uploadReportForRequest = [
 ];
 
 // =============================================
-// 📤 LAB CREATES TEST REQUEST (walk-in direct booking)
+// 📤 LAB CREATES TEST REQUEST (walk-in direct booking or clinic referred)
 // POST /api/lab-connect/test-requests/lab/create
-// Body: { clinicId, patientName, patientPhone, testName, notes }
+// Body: { clinicId, patientName, patientPhone, testName, notes, appointmentDate, appointmentTime }
 // =============================================
 exports.createLabTestRequest = async (req, res) => {
     try {
         const labId = req.lab.id;
-        const { clinicId, patientName, patientPhone, testName, notes } = req.body;
+        const { clinicId, patientName, patientPhone, testName, notes, appointmentDate, appointmentTime } = req.body;
 
-        if (!clinicId || !patientName || !patientPhone || !testName) {
-            return res.status(400).json({ success: false, message: 'clinicId, patientName, patientPhone, testName are required.' });
+        if (!patientName || !patientPhone || !testName) {
+            return res.status(400).json({ success: false, message: 'patientName, patientPhone, testName are required.' });
         }
 
-        // Verify connection is active
-        const conn = await LabConnection.findOne({ clinicId, labId, status: 'accepted' });
-        if (!conn) {
-            return res.status(403).json({ success: false, message: 'You are not connected to this clinic.' });
+        let verifiedClinicId = null;
+        if (clinicId) {
+            // Verify connection is active if clinic is specified
+            const conn = await LabConnection.findOne({ clinicId, labId, status: 'accepted' });
+            if (!conn) {
+                return res.status(403).json({ success: false, message: 'You are not connected to this clinic.' });
+            }
+            verifiedClinicId = clinicId;
         }
 
         let targetPatientId = req.body.patientId || null;
@@ -508,7 +512,10 @@ exports.createLabTestRequest = async (req, res) => {
 
         const request = await ExternalLabRequest.create({
             labId,
-            clinicId,
+            clinicId: verifiedClinicId,
+            isDirectPatient: !verifiedClinicId,
+            appointmentDate: appointmentDate ? new Date(appointmentDate) : new Date(),
+            appointmentTime: appointmentTime || null,
             patientId: targetPatientId,
             patientName,
             patientPhone,
@@ -519,11 +526,164 @@ exports.createLabTestRequest = async (req, res) => {
         // Emit socket events
         if (req.io) {
             req.io.to(`lab_${labId}`).emit('testRequestUpdate');
-            req.io.to(clinicId.toString()).emit('queueUpdate');
+            if (verifiedClinicId) {
+                req.io.to(verifiedClinicId.toString()).emit('queueUpdate');
+            }
         }
 
-        res.status(201).json({ success: true, message: 'Walk-in test request created successfully.', data: request });
+        res.status(201).json({ success: true, message: 'Test request created successfully.', data: request });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🌐 PUBLIC: PATIENT BOOKS DIRECT LAB APPOINTMENT
+// POST /api/lab-connect/public/book-appointment
+// Body: { labId, identifier, patientName, patientPhone, testName, appointmentDate, appointmentTime, notes }
+// =============================================
+exports.bookDirectLabAppointment = async (req, res) => {
+    try {
+        const { labId, identifier, patientName, patientPhone, testName, appointmentDate, appointmentTime, notes } = req.body;
+
+        if (!patientName || !patientPhone || !testName) {
+            return res.status(400).json({ success: false, message: 'Patient name, phone number, and test name are required.' });
+        }
+
+        const IndependentLab = require('../models/IndependentLab');
+        let lab = null;
+        if (labId) {
+            lab = await IndependentLab.findById(labId);
+        } else if (identifier) {
+            lab = await IndependentLab.findOne({
+                $or: [
+                    { slug: identifier.toLowerCase().trim() },
+                    { labCode: identifier.toUpperCase().trim() }
+                ]
+            });
+        }
+
+        if (!lab || !lab.isActive) {
+            return res.status(404).json({ success: false, message: 'Diagnostic laboratory not found or inactive.' });
+        }
+
+        let targetPatientId = null;
+        if (patientPhone && patientName) {
+            const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+            const Patient = require('../models/Patient');
+            const p = await Patient.findOne({
+                phone: new RegExp(cleanPhone + '$'),
+                name: new RegExp(`^${patientName.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}$`, 'i'),
+                mergedInto: null
+            });
+            if (p) targetPatientId = p._id;
+        }
+
+        const request = await ExternalLabRequest.create({
+            labId: lab._id,
+            clinicId: null,
+            isDirectPatient: true,
+            appointmentDate: appointmentDate ? new Date(appointmentDate) : new Date(),
+            appointmentTime: appointmentTime || null,
+            patientId: targetPatientId,
+            patientName: patientName.trim(),
+            patientPhone: patientPhone.trim(),
+            testName: testName.trim(),
+            notes: notes || 'Booked directly via Appointory patient portal',
+            status: 'Pending'
+        });
+
+        if (req.io) {
+            req.io.to(`lab_${lab._id}`).emit('testRequestUpdate');
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Your diagnostic appointment has been submitted to the laboratory.',
+            data: request
+        });
+    } catch (error) {
+        console.error('Direct Lab Appointment Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🌐 PUBLIC: GET ALL ACTIVE DIAGNOSTIC LABS
+// GET /api/lab-connect/public/labs
+// =============================================
+exports.getPublicLabsList = async (req, res) => {
+    try {
+        const labs = await IndependentLab.find({ isActive: true })
+            .select('labName labCode slug address phone availableTests rating bio logo openingTime closingTime workingDays')
+            .lean();
+
+        res.status(200).json({ success: true, data: labs });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================================
+// 🔍 LAB PORTAL: LOOKUP PATIENT OR REQUEST VIA QR / PHONE
+// GET /api/lab-connect/lookup-patient/:phoneOrCode
+// =============================================
+exports.lookupPatientForLab = async (req, res) => {
+    try {
+        const { phoneOrCode } = req.params;
+        const labId = req.lab.id;
+
+        if (!phoneOrCode) {
+            return res.status(400).json({ success: false, message: 'Query parameter required' });
+        }
+
+        const raw = String(phoneOrCode).trim();
+        const clean = raw.replace(/\D/g, '').slice(-10);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(raw);
+
+        // 1. Check if there are existing test requests in this lab
+        const requestQuery = { labId };
+        const queryOr = [];
+
+        if (isObjectId) {
+            queryOr.push({ _id: raw });
+        }
+        if (clean.length === 10) {
+            queryOr.push({ patientPhone: new RegExp(clean + '$') });
+        }
+        if (raw.length > 2 && !isObjectId) {
+            queryOr.push({ patientName: new RegExp(raw, 'i') });
+        }
+
+        if (queryOr.length > 0) {
+            requestQuery.$or = queryOr;
+        }
+
+        const requests = await ExternalLabRequest.find(requestQuery)
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .lean();
+
+        // 2. Lookup Patient registered in Appointory
+        let patient = null;
+        if (clean.length === 10) {
+            const Patient = require('../models/Patient');
+            patient = await Patient.findOne({
+                phone: new RegExp(clean + '$'),
+                mergedInto: null
+            }).select('name phone age gender bloodGroup address').lean();
+        }
+
+        res.status(200).json({
+            success: true,
+            data: {
+                cleanPhone: clean,
+                requests,
+                patient
+            }
+        });
+    } catch (error) {
+        console.error('Lookup Patient For Lab Error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -673,13 +833,40 @@ exports.getLabSettings = async (req, res) => {
     try {
         const labId = req.lab.id;
         const LabSettings = require('../models/LabSettings');
+        const IndependentLab = require('../models/IndependentLab');
+        
+        const [settingsDoc, lab] = await Promise.all([
+            LabSettings.findOne({ labId }),
+            IndependentLab.findById(labId).select('labName labCode address phone email logo slug bio availableTests seoTitle seoDescription seoKeywords socialLinks rating accreditation videoUrl publicListingConsent')
+        ]);
 
-        let settings = await LabSettings.findOne({ labId });
+        let settings = settingsDoc;
         if (!settings) {
             settings = await LabSettings.create({ labId });
         }
+        
+        const mergedData = {
+            ...(settings ? settings.toObject() : {}),
+            labName: lab?.labName || '',
+            labCode: lab?.labCode || '',
+            address: lab?.address || '',
+            phone: lab?.phone || '',
+            email: lab?.email || '',
+            logo: lab?.logo || '',
+            slug: lab?.slug || '',
+            bio: lab?.bio || '',
+            availableTests: lab?.availableTests || [],
+            seoTitle: lab?.seoTitle || '',
+            seoDescription: lab?.seoDescription || '',
+            seoKeywords: lab?.seoKeywords || [],
+            socialLinks: lab?.socialLinks || { facebook: '', instagram: '', twitter: '', linkedin: '', youtube: '' },
+            rating: lab?.rating || { score: 0, count: 0 },
+            accreditation: lab?.accreditation || [],
+            videoUrl: lab?.videoUrl || '',
+            publicListingConsent: Boolean(lab?.publicListingConsent)
+        };
 
-        res.status(200).json({ success: true, data: settings });
+        res.status(200).json({ success: true, data: mergedData });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -690,8 +877,12 @@ exports.updateLabSettings = async (req, res) => {
         const labId = req.lab.id;
         const LabSettings = require('../models/LabSettings');
         const IndependentLab = require('../models/IndependentLab');
-        const { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName, slug, bio, availableTests, seoTitle, seoDescription, publicListingConsent } = req.body;
-
+        const {
+            testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName,
+            slug, bio, availableTests, seoTitle, seoDescription, seoKeywords,
+            socialLinks, accreditation, videoUrl, publicListingConsent
+        } = req.body;
+        
         const settings = await LabSettings.findOneAndUpdate(
             { labId },
             { testFee, primaryColor, headerFontSize, bodyFontSize, defaultNotes, defaultDoctorName },
@@ -714,14 +905,18 @@ exports.updateLabSettings = async (req, res) => {
             }
         }
 
-        // Also sync profile and test catalog to IndependentLab model
+        // Also sync profile and SEO to IndependentLab model
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || req.ip || '';
         const labUpdate = {};
-        if (formattedSlug) labUpdate.slug = formattedSlug;
+        if (formattedSlug !== undefined) labUpdate.slug = formattedSlug;
         if (bio !== undefined) labUpdate.bio = bio;
         if (Array.isArray(availableTests)) labUpdate.availableTests = availableTests;
         if (seoTitle !== undefined) labUpdate.seoTitle = seoTitle;
         if (seoDescription !== undefined) labUpdate.seoDescription = seoDescription;
+        if (Array.isArray(seoKeywords)) labUpdate.seoKeywords = seoKeywords.map(k => String(k).trim()).filter(Boolean);
+        if (socialLinks !== undefined) labUpdate.socialLinks = socialLinks;
+        if (Array.isArray(accreditation)) labUpdate.accreditation = accreditation;
+        if (videoUrl !== undefined) labUpdate.videoUrl = videoUrl;
         if (publicListingConsent !== undefined) {
             labUpdate.publicListingConsent = Boolean(publicListingConsent);
             labUpdate.publicListingConsentDate = publicListingConsent ? new Date() : null;
@@ -734,7 +929,7 @@ exports.updateLabSettings = async (req, res) => {
         if (Object.keys(labUpdate).length > 0) {
             await IndependentLab.findByIdAndUpdate(labId, labUpdate);
         }
-
+        
         res.status(200).json({ success: true, message: 'Settings saved successfully.', data: settings });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

@@ -65,9 +65,9 @@ exports.fetchPatientBillingData = async (req, res) => {
             patientPhone: phone,
             createdAt: { $gte: startOfDay }
         })
-            .populate('doctorId', 'name specialization')
-            .sort({ createdAt: -1 })
-            .lean();
+        .populate('doctorId', 'name specialization')
+        .sort({ createdAt: -1 })
+        .lean();
 
         // 4. Fetch All Active Doctors for Selection
         let doctors = await User.find({
@@ -212,7 +212,7 @@ exports.createInvoice = async (req, res) => {
         if (patientId) {
             try {
                 patient = await Patient.findById(patientId);
-            } catch (_) { }
+            } catch (_) {}
         }
 
         const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
@@ -419,8 +419,8 @@ exports.createInvoice = async (req, res) => {
 
         return res.status(201).json({
             success: true,
-            message: generatedToken
-                ? `Invoice issued & Appointment Token (${generatedToken}) booked!`
+            message: generatedToken 
+                ? `Invoice issued & Appointment Token (${generatedToken}) booked!` 
                 : "Invoice generated successfully!",
             invoice,
             tokenNumber: generatedToken,
@@ -448,7 +448,7 @@ const getRevenueMetricsHelper = async (clinicId) => {
     const todayRevenue = todayInvoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
     const todayBilledTotal = todayInvoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
     const totalPendingDues = allInvoices.reduce((sum, inv) => sum + (inv.remainingDue || 0), 0);
-
+    
     const clinicRevenue = allInvoices
         .filter(inv => inv.billingType === 'clinic')
         .reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);

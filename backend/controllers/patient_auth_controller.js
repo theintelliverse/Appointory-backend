@@ -104,7 +104,7 @@ exports.verifyOTPForCheckin = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-
+        
         const verifyResult = await verifyAndConsumeOtp({
             identifier: cleanPhone,
             type: 'patient_phone',
@@ -384,7 +384,7 @@ exports.bookAppointment = async (req, res) => {
         // Get primary patient info — try by ID first, then fall back to phone
         let patient = null;
         if (patientId) {
-            try { patient = await Patient.findById(patientId); } catch (_) { }
+            try { patient = await Patient.findById(patientId); } catch (_) {}
         }
         if (!patient && patientPhone) {
             const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
@@ -453,7 +453,7 @@ exports.bookAppointment = async (req, res) => {
         const clinicWorkingDays = clinic.workingDays && clinic.workingDays.length > 0
             ? clinic.workingDays.map(d => d.toLowerCase())
             : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
+        
         if (!clinicWorkingDays.includes(apptWeekday)) {
             const formattedDay = apptWeekday.charAt(0).toUpperCase() + apptWeekday.slice(1);
             return res.status(400).json({
@@ -526,14 +526,14 @@ exports.bookAppointment = async (req, res) => {
             let queueEntry = null;
             try {
                 queueEntry = await Queue.findById(rescheduleAppointmentId);
-            } catch (_) { }
+            } catch (_) {}
 
             if (!queueEntry) {
                 const matchedInPatient = patient.appointments.find(app => app._id?.toString() === rescheduleAppointmentId || app.queueId?.toString() === rescheduleAppointmentId);
                 if (matchedInPatient?.queueId) {
                     try {
                         queueEntry = await Queue.findById(matchedInPatient.queueId);
-                    } catch (_) { }
+                    } catch (_) {}
                 }
             }
 
@@ -551,7 +551,7 @@ exports.bookAppointment = async (req, res) => {
             await queueEntry.save();
 
             // Find patient and update their appointment record
-            const appointmentIndex = patient.appointments.findIndex(app =>
+            const appointmentIndex = patient.appointments.findIndex(app => 
                 (queueEntry._id && app.queueId?.toString() === queueEntry._id.toString()) ||
                 app.queueId?.toString() === rescheduleAppointmentId ||
                 app._id?.toString() === rescheduleAppointmentId
@@ -645,7 +645,7 @@ exports.bookAppointment = async (req, res) => {
                         body: rescheduleMessage,
                         recipientPatient: patient
                     });
-                } catch (_) { }
+                } catch (_) {}
             }
 
             // 3. Real-Time Socket Broadcast to Clinic & Patient
@@ -813,7 +813,7 @@ exports.getPatientAppointments = async (req, res) => {
         if (patientId) {
             try {
                 patient = await Patient.findById(patientId);
-            } catch (_) { }
+            } catch (_) {}
         }
         if (!patient && phoneRegex) {
             patient = await Patient.findOne({ phone: phoneRegex }).sort({ updatedAt: -1 });
@@ -832,7 +832,7 @@ exports.getPatientAppointments = async (req, res) => {
                         $or: [{ _id: primaryId }, { accountId: primaryId }],
                         mergedInto: null
                     });
-                } catch (_) { }
+                } catch (_) {}
             }
         }
 
@@ -938,6 +938,62 @@ exports.getPatientAppointments = async (req, res) => {
                 });
             }
         });
+
+        // 🔬 Fetch Independent & Connected Lab Test Requests for this patient
+        const ExternalLabRequest = require('../models/ExternalLabRequest');
+        const labQueryOr = [];
+        if (patientIds.length > 0) {
+            labQueryOr.push({ patientId: { $in: patientIds } });
+        }
+        if (phoneRegex) {
+            labQueryOr.push({ patientPhone: phoneRegex });
+        }
+        if (cleanPhone) {
+            labQueryOr.push({ patientPhone: cleanPhone });
+        }
+
+        if (labQueryOr.length > 0) {
+            try {
+                const labRequests = await ExternalLabRequest.find({ $or: labQueryOr })
+                    .populate('labId', 'labName labCode address phone logo slug bio')
+                    .populate('clinicId', 'name clinicCode')
+                    .sort({ appointmentDate: -1, createdAt: -1 })
+                    .lean();
+
+                labRequests.forEach(l => {
+                    const key = `lab_${l._id.toString()}`;
+                    if (!seenMap.has(key)) {
+                        seenMap.set(key, {
+                            _id: l._id,
+                            queueId: l._id,
+                            isLabAppointment: true,
+                            requestId: l._id,
+                            labId: l.labId?._id || l.labId,
+                            labName: l.labId?.labName || 'Diagnostic Laboratory',
+                            labCode: l.labId?.labCode || '',
+                            labSlug: l.labId?.slug || '',
+                            labAddress: l.labId?.address || '',
+                            labPhone: l.labId?.phone || '',
+                            clinicId: l.clinicId?._id || l.clinicId,
+                            clinicName: l.clinicId?.name || null,
+                            testName: l.testName || 'Diagnostic Test',
+                            patientName: l.patientName || patient?.name || 'Patient',
+                            patientPhone: l.patientPhone || patient?.phone || '',
+                            appointmentDate: l.appointmentDate || l.createdAt,
+                            appointmentTime: l.appointmentTime || null,
+                            status: l.status || 'Pending',
+                            reportUrl: l.reportUrl || (Array.isArray(l.reports) && l.reports.length > 0 ? l.reports[0].url : null),
+                            reports: l.reports || [],
+                            notes: l.notes || '',
+                            isDirectPatient: l.isDirectPatient !== false,
+                            createdAt: l.createdAt
+                        });
+                    }
+                });
+            } catch (labErr) {
+                console.warn('⚠️ Could not load patient lab appointments:', labErr.message);
+            }
+        }
 
         const mergedAppointments = Array.from(seenMap.values()).sort(
             (a, b) => new Date(b.appointmentDate || b.createdAt) - new Date(a.appointmentDate || a.createdAt)
@@ -1800,7 +1856,7 @@ exports.getFamilyCandidates = async (req, res) => {
         // Return candidates with privacy-safe masked hints
         const maskedCandidates = candidates.map(c => {
             const trimmedName = (c.name || '').trim();
-            const maskedName = trimmedName.length > 2
+            const maskedName = trimmedName.length > 2 
                 ? `${trimmedName[0]}***${trimmedName.slice(-1)}`
                 : '***';
 
@@ -1873,11 +1929,11 @@ exports.claimFamilyCandidate = async (req, res) => {
         } else if (verificationType === 'visit_date') {
             // Check against lastVisit or appointment dates
             const targetDateStr = new Date(verificationValue).toISOString().slice(0, 10);
-
+            
             if (candidate.lastVisit && new Date(candidate.lastVisit).toISOString().slice(0, 10) === targetDateStr) {
                 isVerified = true;
             } else if (candidate.appointments && candidate.appointments.length > 0) {
-                isVerified = candidate.appointments.some(app =>
+                isVerified = candidate.appointments.some(app => 
                     app.appointmentDate && new Date(app.appointmentDate).toISOString().slice(0, 10) === targetDateStr
                 );
             }

@@ -110,6 +110,31 @@ router.get('/c/:slug', publicReadLimiter, async (req, res, next) => {
         const rawSlug = String(req.params.slug || '').toLowerCase().trim();
         if (!rawSlug) return next();
 
+        const isBookRequest = req.query.book === '1' || req.query.book === 'true';
+
+        // 🎯 If this is a direct booking request (?book=1 / QR Code Scan), immediately redirect to /book
+        if (isBookRequest) {
+            let bookingClinic = await Clinic.findOne({ slug: rawSlug, isActive: true });
+            if (!bookingClinic) {
+                bookingClinic = await Clinic.findOne({ slugHistory: rawSlug, isActive: true });
+            }
+            if (!bookingClinic) {
+                bookingClinic = await Clinic.findOne({ clinicCode: rawSlug.toUpperCase(), isActive: true });
+            }
+            if (!bookingClinic && /^[0-9a-fA-F]{24}$/.test(rawSlug)) {
+                bookingClinic = await Clinic.findOne({ _id: rawSlug, isActive: true });
+            }
+            if (!bookingClinic && rawSlug === 'clinic') {
+                bookingClinic = await Clinic.findOne({ isActive: true });
+            }
+
+            if (bookingClinic) {
+                return res.redirect(302, `/book?clinicId=${bookingClinic._id}&clinic=${bookingClinic.slug || bookingClinic.clinicCode}&utm_source=qr`);
+            } else {
+                return res.redirect(302, `/book?clinic=${encodeURIComponent(rawSlug)}&utm_source=qr`);
+            }
+        }
+
         // Check SSR Cache first
         const cacheKey = `page:/c/${rawSlug}`;
         const cachedHtml = ssrCache.get(cacheKey);
@@ -126,15 +151,27 @@ router.get('/c/:slug', publicReadLimiter, async (req, res, next) => {
             return res.redirect(301, `/c/${historyMatch.slug}${queryPart}`);
         }
 
-        // 2. Query clinic by current slug
-        const clinic = await Clinic.findOne({ slug: rawSlug, isActive: true });
+        // 2. Query clinic by current slug, with fallbacks for clinicCode, ObjectId, or generic 'clinic'
+        let clinic = await Clinic.findOne({ slug: rawSlug, isActive: true });
+        if (!clinic) {
+            clinic = await Clinic.findOne({ clinicCode: rawSlug.toUpperCase(), isActive: true });
+        }
+        if (!clinic && /^[0-9a-fA-F]{24}$/.test(rawSlug)) {
+            clinic = await Clinic.findOne({ _id: rawSlug, isActive: true });
+        }
+        if (!clinic && rawSlug === 'clinic') {
+            clinic = await Clinic.findOne({ isActive: true });
+        }
+
         if (!clinic) {
             return render404(res, 'The requested clinic profile does not exist or is inactive.');
         }
 
         // 3. DPDP Consent & Noindex check
-        if (!clinic.publicListingConsent || clinic.seo?.noindex === true) {
-            return render404(res, 'This clinic has not opted into public listing under India’s Digital Personal Data Protection (DPDP) Act 2023.');
+        // If clinic opted out or hasn't consented, allow direct link visitors to view profile but set noindex header
+        const isOptedOut = !clinic.publicListingConsent || clinic.seo?.noindex === true;
+        if (isOptedOut) {
+            res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
         }
 
         // 4. Fetch associated specialist doctors with explicit directory consent
