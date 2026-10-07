@@ -25,17 +25,23 @@ const CloudinaryStorage = CloudinaryStoragePkg.CloudinaryStorage || CloudinarySt
 
 const cloudinaryStorage = new CloudinaryStorage({
     cloudinary: cloudinaryBase,
-    params: async (req, file) => {
+    params: (req, file, cb) => {
         const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
-        return {
+        const uniqueId = `patient-doc-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const paramObj = {
             folder: 'swasthya_mitra/patient_documents',
-            resource_type: isPdf ? 'raw' : 'auto',
-            public_id: `patient-doc-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+            resource_type: 'auto',
+            allowed_formats: ['jpg', 'png', 'jpeg', 'pdf', 'webp'],
+            public_id: uniqueId
         };
+        if (typeof cb === 'function') {
+            return cb(null, paramObj);
+        }
+        return paramObj;
     }
 });
 
-const upload = multer({ 
+const upload = multer({
     storage: cloudinaryStorage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
