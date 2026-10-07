@@ -8,6 +8,8 @@ const MedicalRecord = require('../models/MedicalRecord');
 const Otp = require('../models/Otp');
 const bcrypt = require('bcryptjs');
 const { generateSecureOtp, storeSecureOtp, verifyAndConsumeOtp } = require('../utils/otp_helper');
+const { sendWhatsAppMessage } = require('../utils/send_whatsapp');
+const sendSMS = require('../utils/send_sms');
 
 // 🔑 TWILIO INITIALIZATION
 const twilio = require('twilio');
@@ -102,7 +104,7 @@ exports.verifyOTPForCheckin = async (req, res) => {
     try {
         let { phone, otp } = req.body;
         const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-        
+
         const verifyResult = await verifyAndConsumeOtp({
             identifier: cleanPhone,
             type: 'patient_phone',
@@ -382,7 +384,7 @@ exports.bookAppointment = async (req, res) => {
         // Get primary patient info — try by ID first, then fall back to phone
         let patient = null;
         if (patientId) {
-            try { patient = await Patient.findById(patientId); } catch (_) {}
+            try { patient = await Patient.findById(patientId); } catch (_) { }
         }
         if (!patient && patientPhone) {
             const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
@@ -451,7 +453,7 @@ exports.bookAppointment = async (req, res) => {
         const clinicWorkingDays = clinic.workingDays && clinic.workingDays.length > 0
             ? clinic.workingDays.map(d => d.toLowerCase())
             : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-        
+
         if (!clinicWorkingDays.includes(apptWeekday)) {
             const formattedDay = apptWeekday.charAt(0).toUpperCase() + apptWeekday.slice(1);
             return res.status(400).json({
@@ -524,14 +526,14 @@ exports.bookAppointment = async (req, res) => {
             let queueEntry = null;
             try {
                 queueEntry = await Queue.findById(rescheduleAppointmentId);
-            } catch (_) {}
+            } catch (_) { }
 
             if (!queueEntry) {
                 const matchedInPatient = patient.appointments.find(app => app._id?.toString() === rescheduleAppointmentId || app.queueId?.toString() === rescheduleAppointmentId);
                 if (matchedInPatient?.queueId) {
                     try {
                         queueEntry = await Queue.findById(matchedInPatient.queueId);
-                    } catch (_) {}
+                    } catch (_) { }
                 }
             }
 
@@ -549,7 +551,7 @@ exports.bookAppointment = async (req, res) => {
             await queueEntry.save();
 
             // Find patient and update their appointment record
-            const appointmentIndex = patient.appointments.findIndex(app => 
+            const appointmentIndex = patient.appointments.findIndex(app =>
                 (queueEntry._id && app.queueId?.toString() === queueEntry._id.toString()) ||
                 app.queueId?.toString() === rescheduleAppointmentId ||
                 app._id?.toString() === rescheduleAppointmentId
@@ -575,19 +577,84 @@ exports.bookAppointment = async (req, res) => {
 
             await patient.save();
 
-            // Send rescheduled request submitted SMS
+            // Send rescheduled request submitted SMS & WhatsApp notifications
+            const cleanPhone = (patient.phone || '').replace(/\D/g, '').slice(-10);
+            const formattedPhone = `+91${cleanPhone}`;
+            const dateDisplay = new Date(parsedAppointmentDate).toLocaleDateString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric'
+            });
+            const timeDisplay = new Date(parsedAppointmentDate).toLocaleTimeString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            const patientName = patient?.name || 'Valued Patient';
+            const rescheduleMessage = `Namaste ${patientName}, your appointment reschedule request has been submitted to ${clinic.name} with Dr. ${doctor.name} for ${dateDisplay} (${timeDisplay}). The receptionist will verify and confirm shortly. Request ID: ${queueEntry._id} - Appointory`;
+
+            // 1. Dispatch SMS
             try {
-                const cleanPhone = patient.phone.replace(/\D/g, '').slice(-10);
-                const formattedPhone = `+91${cleanPhone}`;
-                if (process.env.TWILIO_PHONE_NUMBER) {
-                    await client.messages.create({
-                        body: `Your appointment reschedule request has been submitted to ${clinic.name} with Dr. ${doctor.name}. New Date: ${new Date(appointmentDate).toLocaleDateString()}. The receptionist will verify and confirm shortly. Request ID: ${queueEntry._id}`,
+                const client = getTwilioClient();
+                if (client && process.env.TWILIO_PHONE_NUMBER && cleanPhone) {
+                    const smsRes = await client.messages.create({
+                        body: rescheduleMessage,
                         from: process.env.TWILIO_PHONE_NUMBER,
                         to: formattedPhone
                     });
+                    console.log(`✅ [RESCHEDULE SMS SENT] SID: ${smsRes.sid} To: ${formattedPhone}`);
+                } else if (cleanPhone) {
+                    await sendSMS(cleanPhone, rescheduleMessage);
                 }
             } catch (smsError) {
                 console.error("❌ Reschedule SMS Error:", smsError.message);
+                try {
+                    if (cleanPhone) await sendSMS(cleanPhone, rescheduleMessage);
+                } catch (fallbackErr) {
+                    console.error("❌ Reschedule SMS Fallback Error:", fallbackErr.message);
+                }
+            }
+
+            // 2. Dispatch WhatsApp Notification
+            try {
+                if (cleanPhone) {
+                    const client = getTwilioClient();
+                    const twilioWhatsApp = process.env.TWILIO_WHATSAPP_FROM || process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE || '+14155238886';
+                    if (client && twilioWhatsApp) {
+                        const fromWhatsApp = twilioWhatsApp.startsWith('whatsapp:') ? twilioWhatsApp : `whatsapp:${twilioWhatsApp}`;
+                        const waRes = await client.messages.create({
+                            body: rescheduleMessage,
+                            from: fromWhatsApp,
+                            to: `whatsapp:${formattedPhone}`
+                        });
+                        console.log(`✅ [RESCHEDULE WHATSAPP SENT] SID: ${waRes.sid} To: whatsapp:${formattedPhone}`);
+                    } else {
+                        await sendWhatsAppMessage({
+                            to: cleanPhone,
+                            body: rescheduleMessage,
+                            recipientPatient: patient
+                        });
+                    }
+                }
+            } catch (waError) {
+                console.warn("⚠️ Reschedule WhatsApp Error:", waError.message);
+                try {
+                    await sendWhatsAppMessage({
+                        to: cleanPhone,
+                        body: rescheduleMessage,
+                        recipientPatient: patient
+                    });
+                } catch (_) { }
+            }
+
+            // 3. Real-Time Socket Broadcast to Clinic & Patient
+            if (req.io) {
+                req.io.to(clinicId.toString()).emit('newAppointment', queueEntry);
+                req.io.to(clinicId.toString()).emit('queueUpdated', { clinicId });
+                if (cleanPhone) {
+                    req.io.to(cleanPhone).emit('queueUpdate', queueEntry);
+                }
             }
 
             return res.status(200).json({
@@ -663,23 +730,41 @@ exports.bookAppointment = async (req, res) => {
             await clinic.save();
         }
 
-        // Send request submitted SMS (pending receptionist approval)
+        // Send request submitted SMS & WhatsApp (pending receptionist approval)
         try {
             const cleanPhone = patient.phone.replace(/\D/g, '').slice(-10);
             const formattedPhone = `+91${cleanPhone}`;
             const client = getTwilioClient();
+            const dateDisplay = new Date(parsedAppointmentDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+            const bookingBody = `Your appointment request for ${bookingPatient.name} has been submitted to ${clinic.name} with Dr. ${doctor.name} for ${dateDisplay}. Receptionist will verify and confirm shortly. Request ID: ${queueEntry._id} - Appointory`;
 
+            // SMS
             if (client && process.env.TWILIO_PHONE_NUMBER) {
-                const dateDisplay = new Date(parsedAppointmentDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
                 await client.messages.create({
-                    body: `Your appointment request for ${bookingPatient.name} has been submitted to ${clinic.name} with Dr. ${doctor.name} for ${dateDisplay}. Receptionist will verify and confirm shortly. Request ID: ${queueEntry._id}`,
+                    body: bookingBody,
                     from: process.env.TWILIO_PHONE_NUMBER,
                     to: formattedPhone
                 });
                 console.log(`✅ SMS Sent to ${formattedPhone}`);
+            } else if (cleanPhone) {
+                await sendSMS(cleanPhone, bookingBody);
+            }
+
+            // WhatsApp
+            const twilioWhatsApp = process.env.TWILIO_WHATSAPP_FROM || process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE || '+14155238886';
+            if (client && twilioWhatsApp) {
+                const fromWhatsApp = twilioWhatsApp.startsWith('whatsapp:') ? twilioWhatsApp : `whatsapp:${twilioWhatsApp}`;
+                await client.messages.create({
+                    body: bookingBody,
+                    from: fromWhatsApp,
+                    to: `whatsapp:${formattedPhone}`
+                });
+                console.log(`✅ WhatsApp Sent to whatsapp:${formattedPhone}`);
+            } else if (cleanPhone) {
+                await sendWhatsAppMessage({ to: cleanPhone, body: bookingBody, recipientPatient: bookingPatient });
             }
         } catch (smsError) {
-            console.error("❌ SMS Error - Patient Phone:", patient.phone, "Error:", smsError.message);
+            console.error("❌ Notification Error - Patient Phone:", patient.phone, "Error:", smsError.message);
         }
 
         // 📢 REAL-TIME SOCKET BROADCAST
@@ -728,7 +813,7 @@ exports.getPatientAppointments = async (req, res) => {
         if (patientId) {
             try {
                 patient = await Patient.findById(patientId);
-            } catch (_) {}
+            } catch (_) { }
         }
         if (!patient && phoneRegex) {
             patient = await Patient.findOne({ phone: phoneRegex }).sort({ updatedAt: -1 });
@@ -747,7 +832,7 @@ exports.getPatientAppointments = async (req, res) => {
                         $or: [{ _id: primaryId }, { accountId: primaryId }],
                         mergedInto: null
                     });
-                } catch (_) {}
+                } catch (_) { }
             }
         }
 
@@ -1715,7 +1800,7 @@ exports.getFamilyCandidates = async (req, res) => {
         // Return candidates with privacy-safe masked hints
         const maskedCandidates = candidates.map(c => {
             const trimmedName = (c.name || '').trim();
-            const maskedName = trimmedName.length > 2 
+            const maskedName = trimmedName.length > 2
                 ? `${trimmedName[0]}***${trimmedName.slice(-1)}`
                 : '***';
 
@@ -1788,11 +1873,11 @@ exports.claimFamilyCandidate = async (req, res) => {
         } else if (verificationType === 'visit_date') {
             // Check against lastVisit or appointment dates
             const targetDateStr = new Date(verificationValue).toISOString().slice(0, 10);
-            
+
             if (candidate.lastVisit && new Date(candidate.lastVisit).toISOString().slice(0, 10) === targetDateStr) {
                 isVerified = true;
             } else if (candidate.appointments && candidate.appointments.length > 0) {
-                isVerified = candidate.appointments.some(app => 
+                isVerified = candidate.appointments.some(app =>
                     app.appointmentDate && new Date(app.appointmentDate).toISOString().slice(0, 10) === targetDateStr
                 );
             }
