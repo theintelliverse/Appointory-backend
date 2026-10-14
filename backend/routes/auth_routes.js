@@ -29,7 +29,7 @@ const cloudinaryStorage = new CloudinaryStorage({
         const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
         const uniqueId = `patient-doc-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
         const paramObj = {
-            folder: 'swasthya_mitra/patient_documents',
+            folder: 'appointory/patient_documents',
             resource_type: 'auto',
             allowed_formats: ['jpg', 'png', 'jpeg', 'pdf', 'webp'],
             public_id: uniqueId

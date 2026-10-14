@@ -618,12 +618,13 @@ router.get('/sitemap.xml', async (req, res) => {
         let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
         xml += `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
 
-        // Core Static Pages
+        // Core Static & Landing Pages
         const staticPages = [
             { path: '', priority: '1.0', changefreq: 'daily' },
             { path: 'clinics', priority: '0.9', changefreq: 'daily' },
             { path: 'pricing', priority: '0.9', changefreq: 'weekly' },
             { path: 'blog', priority: '0.85', changefreq: 'weekly' },
+            { path: 'blog/how-to-reduce-patient-waiting-time-in-clinics', priority: '0.85', changefreq: 'monthly' },
             { path: 'features/queue-management', priority: '0.9', changefreq: 'weekly' },
             { path: 'features/token-display-tv', priority: '0.9', changefreq: 'weekly' },
             { path: 'features/gst-billing', priority: '0.9', changefreq: 'weekly' },
@@ -633,9 +634,25 @@ router.get('/sitemap.xml', async (req, res) => {
             { path: 'for/doctors', priority: '0.85', changefreq: 'weekly' },
             { path: 'for/labs', priority: '0.85', changefreq: 'weekly' },
             { path: 'compare/appointory-vs-practo', priority: '0.8', changefreq: 'monthly' },
+            { path: 'clinic-software/ahmedabad', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/surat', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/vadodara', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/rajkot', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/mumbai', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/delhi', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/bengaluru', priority: '0.85', changefreq: 'weekly' },
+            { path: 'clinic-software/pune', priority: '0.85', changefreq: 'weekly' },
             { path: 'about', priority: '0.7', changefreq: 'monthly' },
             { path: 'press', priority: '0.7', changefreq: 'monthly' },
-            { path: 'links', priority: '0.7', changefreq: 'weekly' }
+            { path: 'links', priority: '0.7', changefreq: 'weekly' },
+            { path: 'privacy', priority: '0.4', changefreq: 'monthly' },
+            { path: 'terms', priority: '0.4', changefreq: 'monthly' },
+            { path: 'contact', priority: '0.6', changefreq: 'monthly' },
+            { path: 'cookie-policy', priority: '0.3', changefreq: 'monthly' },
+            { path: 'refund-policy', priority: '0.3', changefreq: 'monthly' },
+            { path: 'llms.txt', priority: '0.7', changefreq: 'weekly' },
+            { path: 'llms-full.txt', priority: '0.7', changefreq: 'weekly' },
+            { path: 'ai.txt', priority: '0.7', changefreq: 'weekly' }
         ];
 
         const nowIso = new Date().toISOString();
@@ -668,8 +685,27 @@ router.get('/sitemap.xml', async (req, res) => {
         res.setHeader('Content-Type', 'application/xml; charset=utf-8');
         return res.status(200).send(xml);
     } catch (error) {
-        console.error('❌ Sitemap generation error:', error);
-        res.status(500).send('<!-- Sitemap Error -->');
+        console.error('❌ Sitemap generation error, sending static fallback:', error);
+        // Resilient fallback sitemap so Google Search Console never sees 500 error
+        const nowIso = new Date().toISOString().slice(0, 10);
+        const fallbackXml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${SITE_URL}/</loc><lastmod>${nowIso}</lastmod><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>${SITE_URL}/pricing</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>${SITE_URL}/blog</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
+  <url><loc>${SITE_URL}/blog/how-to-reduce-patient-waiting-time-in-clinics</loc><lastmod>${nowIso}</lastmod><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>${SITE_URL}/features/queue-management</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>${SITE_URL}/features/token-display-tv</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>${SITE_URL}/features/gst-billing</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>${SITE_URL}/compare/appointory-vs-practo</loc><lastmod>${nowIso}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>${SITE_URL}/clinic-software/ahmedabad</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
+  <url><loc>${SITE_URL}/clinic-software/surat</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
+  <url><loc>${SITE_URL}/clinic-software/mumbai</loc><lastmod>${nowIso}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
+  <url><loc>${SITE_URL}/privacy</loc><lastmod>${nowIso}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>
+  <url><loc>${SITE_URL}/terms</loc><lastmod>${nowIso}</lastmod><changefreq>monthly</changefreq><priority>0.4</priority></url>
+</urlset>`;
+        res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+        return res.status(200).send(fallbackXml);
     }
 });
 
