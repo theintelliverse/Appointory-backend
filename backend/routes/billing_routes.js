@@ -21,7 +21,7 @@ router.use(protect);
 // 🔒 Gate behind billing service subscription
 router.use(requireService('billing'));
 
-// 🩺 Fetch clinic practitioners/doctors for billing dropdown
+// Fetch clinic practitioners/doctors for billing dropdown
 router.get('/doctors', authorize('receptionist', 'admin', 'doctor', 'lab'), getBillingDoctors);
 
 // 📊 Live Revenue Analytics

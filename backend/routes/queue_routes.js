@@ -81,13 +81,13 @@ router.patch('/complete/:id', authorize('receptionist', 'doctor'), completeVisit
 router.patch('/draft/:id', authorize('doctor', 'admin'), saveConsultationDraft);
 router.delete('/draft/:id', authorize('doctor', 'admin'), discardConsultationDraft);
 
-// 📲 Dual SMS & WhatsApp Notification Trigger (Requires active paid messaging service)
+// Dual SMS & WhatsApp Notification Trigger (Requires active paid messaging service)
 router.post('/notify/:id', authorize('receptionist', 'admin', 'doctor'), requireService('messaging'), sendQueueAlert);
 
-// 🩺 VITALS UPDATE (Doctor)
+// VITALS UPDATE (Doctor)
 router.post('/update-vitals/:queueId', authorize('doctor'), updateVitals);
 
-// 🔬 Lab Referral Routes
+// Lab Referral Routes
 router.patch('/refer/lab/:queueId', authorize('receptionist', 'doctor'), referToLab);
 router.patch('/lab/complete/:queueId', authorize('lab', 'admin'), completeLabTask);
 

@@ -23,7 +23,7 @@ router.post('/resend-credentials', authorize('admin'), staffController.resendCre
 router.patch('/toggle-status/:staffId', authorize('admin', 'doctor', 'receptionist', 'lab'), staffController.toggleAvailability);
 router.delete('/delete/:staffId', staffController.archiveStaff);
 
-// --- 🩺 CLINICAL DATA ---
+// --- CLINICAL DATA ---
 router.patch('/update-patient-profile/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientProfile);
 router.patch('/update-patient-vitals/:phone', authorize('receptionist', 'doctor', 'admin'), staffController.updatePatientVitals);
 router.get('/patient-full-profile/:phone', authorize('doctor', 'admin', 'receptionist'), staffController.getPatientFullProfile);
