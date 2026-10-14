@@ -54,6 +54,26 @@ const queueSchema = mongoose.Schema({
     }
   ],
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
+  consultationDraft: {
+    diagnosis: { type: String, default: '' },
+    notes: { type: String, default: '' },
+    medicines: [
+      {
+        name: { type: String },
+        dosage: { type: String },
+        frequency: { type: String },
+        duration: { type: String },
+        instructions: { type: String },
+        whenToTake: { type: String },
+        amount: { type: String },
+        time: { type: String },
+        total: { type: String },
+        strength: { type: String }
+      }
+    ],
+    followUpDate: { type: Date, default: null },
+    savedAt: { type: Date, default: null }
+  },
   // Reminder and follow-up tracking
   reminder24hSent: { type: Boolean, default: false },
   reminder24hSkipped: { type: String, default: null }, // e.g., 'no_opt_in'
@@ -64,6 +84,7 @@ const queueSchema = mongoose.Schema({
   reminder2hAttempts: { type: Number, default: 0 },
   reminder2hMessageId: { type: String, default: null }, // Idempotency key from WhatsApp provider
   claimedAt: { type: Date, default: null },
+  followUpDate: { type: Date, default: null },
   followUpSent: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });

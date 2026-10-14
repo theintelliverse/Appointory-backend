@@ -13,14 +13,18 @@ const medicalRecordSchema = mongoose.Schema({
     {
       name: { type: String },
       strength: { type: String },
+      amount: { type: String },
       whenToTake: { type: String },
+      time: { type: String },
       beforeAfter: { type: String },
       duration: { type: String },
+      total: { type: String },
       instructions: { type: String }
     }
   ],
   visitDate: { type: Date, default: Date.now },
-  duration: Number // Minutes spent in cabin
+  duration: Number, // Minutes spent in cabin
+  followUpDate: { type: Date }
 });
 
 module.exports = mongoose.model('MedicalRecord', medicalRecordSchema);

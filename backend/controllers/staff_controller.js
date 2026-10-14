@@ -696,23 +696,23 @@ exports.createPrescription = async (req, res) => {
             return res.status(400).json({ success: false, message: limitErr.message });
         }
 
+        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
         const targetPatientId = req.body.patientId || null;
 
-        // Create Medical Record
-        const record = await MedicalRecord.create({
-            clinicId,
-            doctorId,
-            patientName,
-            patientPhone,
-            patientId: targetPatientId,
-            diagnosis: diagnosis || notes || "General Consultation",
-            notes: notes || "Issued directly from Prescription Records",
-            medicines: medicines || [],
-            visitDate: Date.now()
-        });
+        // Normalize medicine structure so all frontend/locker fields (amount, strength, time, whenToTake, total, duration) exist
+        const normalizedMedicines = (medicines || []).map(m => ({
+            name: m.name || '',
+            strength: m.amount || m.strength || '',
+            amount: m.amount || m.strength || '',
+            whenToTake: m.time || m.whenToTake || '',
+            time: m.time || m.whenToTake || '',
+            beforeAfter: m.beforeAfter || '',
+            duration: m.total || m.duration || '',
+            total: m.total || m.duration || '',
+            instructions: m.instructions || m.notes || ''
+        }));
 
-        // Add to digital locker history for the SPECIFIC patient (family member or primary)
-        const cleanPhone = patientPhone.replace(/\D/g, '').slice(-10);
+        // Find or create patient record so the patient can log in and view prescriptions in their digital locker
         let patient = null;
         if (targetPatientId) {
             try { patient = await Patient.findById(targetPatientId); } catch (_) {}
@@ -729,15 +729,40 @@ exports.createPrescription = async (req, res) => {
             patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
         }
 
+        // Auto-create patient profile if patient does not exist yet so prescription is saved to their account
+        if (!patient && cleanPhone) {
+            patient = await Patient.create({
+                name: patientName.trim(),
+                phone: cleanPhone,
+                isPrimaryAccount: true,
+                registeredOn: new Date()
+            });
+        }
+
+        // Create Medical Record
+        const record = await MedicalRecord.create({
+            clinicId,
+            doctorId,
+            patientName: patientName.trim(),
+            patientPhone: cleanPhone || patientPhone,
+            patientId: patient?._id || targetPatientId || null,
+            diagnosis: diagnosis || notes || "General Consultation",
+            notes: notes || "Issued directly from Prescription Records",
+            medicines: normalizedMedicines,
+            visitDate: Date.now()
+        });
+
+        // Add to digital locker history for the SPECIFIC patient
         if (patient) {
             patient.medicalHistory.push({
-                visitId: record._id,
+                visitId: record._id.toString(),
                 doctorName: req.user.name || "Doctor",
                 clinicName: req.user.clinicName || "Our Clinic",
                 diagnosis: diagnosis || notes || "General Consultation",
                 date: Date.now(),
-                medicines: medicines || [],
-                symptoms: notes || "Direct Prescription"
+                medicines: normalizedMedicines,
+                symptoms: notes || "Direct Prescription",
+                prescription: notes || ""
             });
             patient.lastVisit = Date.now();
             await patient.save();
@@ -749,7 +774,81 @@ exports.createPrescription = async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: "Prescription issued successfully!",
+            message: "Prescription issued successfully and stored to patient locker!",
+            data: resObj
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- ✏️ UPDATE PRESCRIPTION ---
+exports.updatePrescription = async (req, res) => {
+    try {
+        const { prescriptionId } = req.params;
+        const { patientName, patientPhone, diagnosis, notes, medicines } = req.body;
+        const clinicId = req.user.clinicId;
+
+        const record = await MedicalRecord.findOne({ _id: prescriptionId, clinicId });
+        if (!record) {
+            return res.status(404).json({ success: false, message: "Prescription record not found." });
+        }
+
+        const normalizedMedicines = (medicines || []).map(m => ({
+            name: m.name || '',
+            strength: m.amount || m.strength || '',
+            amount: m.amount || m.strength || '',
+            whenToTake: m.time || m.whenToTake || '',
+            time: m.time || m.whenToTake || '',
+            beforeAfter: m.beforeAfter || '',
+            duration: m.total || m.duration || '',
+            total: m.total || m.duration || '',
+            instructions: m.instructions || m.notes || ''
+        }));
+
+        if (patientName) record.patientName = patientName.trim();
+        if (patientPhone) record.patientPhone = patientPhone.replace(/\D/g, '').slice(-10) || patientPhone;
+        if (diagnosis !== undefined) record.diagnosis = diagnosis;
+        if (notes !== undefined) record.notes = notes;
+        record.medicines = normalizedMedicines;
+        await record.save();
+
+        // Also update in Patient medicalHistory
+        const cleanPhone = (patientPhone || record.patientPhone || '').replace(/\D/g, '').slice(-10);
+        let patient = record.patientId ? await Patient.findById(record.patientId) : null;
+        if (!patient && cleanPhone) {
+            patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
+        }
+
+        if (patient && patient.medicalHistory) {
+            const historyIdx = patient.medicalHistory.findIndex(h => h.visitId && h.visitId.toString() === prescriptionId.toString());
+            if (historyIdx !== -1) {
+                patient.medicalHistory[historyIdx].diagnosis = diagnosis || record.diagnosis;
+                patient.medicalHistory[historyIdx].symptoms = notes || "Direct Prescription";
+                patient.medicalHistory[historyIdx].prescription = notes || "";
+                patient.medicalHistory[historyIdx].medicines = normalizedMedicines;
+            } else {
+                patient.medicalHistory.push({
+                    visitId: record._id.toString(),
+                    doctorName: req.user.name || "Doctor",
+                    clinicName: req.user.clinicName || "Our Clinic",
+                    diagnosis: diagnosis || notes || "General Consultation",
+                    date: record.visitDate || Date.now(),
+                    medicines: normalizedMedicines,
+                    symptoms: notes || "Direct Prescription",
+                    prescription: notes || ""
+                });
+            }
+            patient.lastVisit = Date.now();
+            await patient.save();
+        }
+
+        const resObj = record.toObject();
+        resObj.createdAt = record.visitDate;
+
+        res.status(200).json({
+            success: true,
+            message: "Prescription updated successfully and synced with patient locker!",
             data: resObj
         });
     } catch (error) {

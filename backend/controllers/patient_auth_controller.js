@@ -544,6 +544,7 @@ exports.bookAppointment = async (req, res) => {
             // Update queue entry
             queueEntry.clinicId = clinicId;
             queueEntry.doctorId = doctorId;
+            queueEntry.visitType = 'Appointment';
             queueEntry.appointmentDate = parsedAppointmentDate;
             queueEntry.reason = reason || queueEntry.reason || '';
             queueEntry.status = 'Pending-Approval';

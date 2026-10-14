@@ -31,6 +31,7 @@ router.get('/patient-family-lookup/:phone', authorize('receptionist', 'doctor', 
 router.post('/patient-family-member', authorize('receptionist', 'doctor', 'admin'), staffController.addPatientFamilyMemberByStaff);
 router.get('/all-prescriptions', authorize('doctor', 'admin'), staffController.getAllPrescriptions);
 router.post('/create-prescription', authorize('doctor', 'admin'), staffController.createPrescription);
+router.put('/update-prescription/:prescriptionId', authorize('doctor', 'admin'), staffController.updatePrescription);
 
 // --- 🔬 LAB OPERATIONS ---
 

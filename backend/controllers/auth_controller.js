@@ -321,6 +321,13 @@ exports.updateProfile = async (req, res) => {
             })
         };
 
+        if (formattedSlug && publicListingConsent === undefined) {
+            updatePayload.publicListingConsent = true;
+            updatePayload.publicListingConsentDate = new Date();
+            updatePayload.publicListingConsentIp = clientIp;
+            updatePayload.publicListingConsentText = 'I hereby grant explicit written/digital consent to list and display my verified qualifications, specialization, and clinical practice on the Appointory public doctor directory in compliance with India’s DPDP Act 2023.';
+        }
+
         const updateOperation = { $set: updatePayload };
         if (formattedSlug) {
             updateOperation.$set.slug = formattedSlug;

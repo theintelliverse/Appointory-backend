@@ -16,7 +16,6 @@ const {
     cancelVisit,
     referToLab,
     completeLabTask,
-    // 🆕 NEW GATEKEEPER ACTIONS
     getPendingRequests,
     approvePatient,
     getPublicDoctorQueue,
@@ -27,7 +26,9 @@ const {
     getWaitEstimation,
     savePrivateNote,
     getPrivateNotes,
-    sendQueueAlert
+    sendQueueAlert,
+    saveConsultationDraft,
+    discardConsultationDraft
 } = require('../controllers/queue_controller');
 
 const { protect, authorize } = require('../utils/auth_middleware');
@@ -77,6 +78,8 @@ router.get('/scheduled/next-7-days', authorize('receptionist', 'doctor', 'admin'
 // Status Management
 router.patch('/start/:id', authorize('receptionist', 'doctor'), startConsultation);
 router.patch('/complete/:id', authorize('receptionist', 'doctor'), completeVisit);
+router.patch('/draft/:id', authorize('doctor', 'admin'), saveConsultationDraft);
+router.delete('/draft/:id', authorize('doctor', 'admin'), discardConsultationDraft);
 
 // 📲 Dual SMS & WhatsApp Notification Trigger (Requires active paid messaging service)
 router.post('/notify/:id', authorize('receptionist', 'admin', 'doctor'), requireService('messaging'), sendQueueAlert);

@@ -504,7 +504,7 @@ exports.approvePatient = async (req, res) => {
         exports.completeVisit = async (req, res) => {
             try {
                 const { id } = req.params;
-                const { notes, diagnosis, medicines } = req.body;
+                const { notes, diagnosis, medicines, followUpDate } = req.body;
 
                 const query = { _id: id };
                 if (req.user.role !== 'superadmin') {
@@ -533,15 +533,39 @@ exports.approvePatient = async (req, res) => {
                     patient = await Patient.findOne({ phone: new RegExp(cleanPhone + '$'), mergedInto: null });
                 }
 
+                if (!patient && queueEntry.patientPhone) {
+                    const cleanPhone = queueEntry.patientPhone.replace(/\D/g, '').slice(-10);
+                    patient = await Patient.create({
+                        name: queueEntry.patientName || 'Patient',
+                        phone: cleanPhone || queueEntry.patientPhone,
+                        isPrimaryAccount: true,
+                        registeredOn: new Date()
+                    });
+                }
+
+                const normalizedMedicines = (medicines || []).map(m => ({
+                    name: m.name || '',
+                    strength: m.amount || m.strength || '',
+                    amount: m.amount || m.strength || '',
+                    whenToTake: m.time || m.whenToTake || '',
+                    time: m.time || m.whenToTake || '',
+                    beforeAfter: m.beforeAfter || '',
+                    duration: m.total || m.duration || '',
+                    total: m.total || m.duration || '',
+                    instructions: m.instructions || m.notes || ''
+                }));
+
                 if (patient) {
                     patient.medicalHistory.push({
-                        visitId: queueEntry._id,
+                        visitId: queueEntry._id.toString(),
                         doctorName: queueEntry.doctorId?.name || req.user?.name || "Doctor",
                         clinicName: req.user.clinicName || "Our Clinic",
                         diagnosis: diagnosis || notes,
                         date: Date.now(),
-                        medicines: medicines || [],
-                        symptoms: notes
+                        medicines: normalizedMedicines,
+                        symptoms: notes,
+                        prescription: notes || "",
+                        followUpDate: followUpDate || null
                     });
                     patient.lastVisit = Date.now();
                     if (patient.appointments && Array.isArray(patient.appointments)) {
@@ -568,7 +592,8 @@ exports.approvePatient = async (req, res) => {
                     tokenNumber: queueEntry.tokenNumber,
                     notes: notes,
                     diagnosis: diagnosis,
-                    medicines: medicines || [],
+                    medicines: normalizedMedicines,
+                    followUpDate: followUpDate || null,
                     duration,
                     visitDate: Date.now()
                 });
@@ -616,7 +641,9 @@ exports.approvePatient = async (req, res) => {
                     status: 'Completed',
                     endTime: Date.now(),
                     diagnosis: diagnosis || notes || queueEntry.reason || '',
-                    medicines: medicines || []
+                    medicines: medicines || [],
+                    followUpDate: followUpDate || null,
+                    consultationDraft: null
                 });
 
                 // 📢 SOCKET EMIT: Clear patient from live dashboards and update list
@@ -624,6 +651,84 @@ exports.approvePatient = async (req, res) => {
 
                 res.status(200).json({ success: true, message: "Record locked." });
             } catch (error) {
+                res.status(500).json({ success: false, message: error.message });
+            }
+        };
+
+        // 💾 Save Consultation Draft (Cross-device & sync)
+        exports.saveConsultationDraft = async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { notes, diagnosis, medicines, followUpDate } = req.body;
+
+                const query = { _id: id };
+                if (req.user.role !== 'superadmin' && req.user.clinicId) {
+                    query.clinicId = req.user.clinicId;
+                }
+
+                const draftData = {
+                    notes: notes || '',
+                    diagnosis: diagnosis || '',
+                    medicines: Array.isArray(medicines) ? medicines : [],
+                    followUpDate: followUpDate || null,
+                    savedAt: new Date()
+                };
+
+                const updated = await Queue.findOneAndUpdate(
+                    query,
+                    { consultationDraft: draftData },
+                    { new: true }
+                );
+
+                if (!updated) {
+                    return res.status(404).json({ success: false, message: "Queue record not found or access denied." });
+                }
+
+                if (req.io && updated.clinicId) {
+                    req.io.to(updated.clinicId.toString()).emit('queueUpdate');
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: "Draft saved successfully.",
+                    data: updated.consultationDraft
+                });
+            } catch (error) {
+                console.error("Error saving consultation draft:", error);
+                res.status(500).json({ success: false, message: error.message });
+            }
+        };
+
+        // 🗑️ Discard Consultation Draft
+        exports.discardConsultationDraft = async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                const query = { _id: id };
+                if (req.user.role !== 'superadmin' && req.user.clinicId) {
+                    query.clinicId = req.user.clinicId;
+                }
+
+                const updated = await Queue.findOneAndUpdate(
+                    query,
+                    { consultationDraft: null },
+                    { new: true }
+                );
+
+                if (!updated) {
+                    return res.status(404).json({ success: false, message: "Queue record not found or access denied." });
+                }
+
+                if (req.io && updated.clinicId) {
+                    req.io.to(updated.clinicId.toString()).emit('queueUpdate');
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: "Draft cleared successfully."
+                });
+            } catch (error) {
+                console.error("Error discarding consultation draft:", error);
                 res.status(500).json({ success: false, message: error.message });
             }
         };
@@ -1651,14 +1756,20 @@ exports.approvePatient = async (req, res) => {
                     // silently handle
                 }
 
+                const totalScheduled = queueWithWait.length;
+                const completedCount = queueWithWait.filter(p => (p.status || '').toLowerCase() === 'completed').length;
+                const activeInConsult = queueWithWait.filter(p => (p.status || '').toLowerCase() === 'in-consultation').length;
+                const followUps = queueWithWait.filter(p => p.visitType === 'Walk-in' && (p.status || '').toLowerCase() === 'waiting').length;
+
                 res.status(200).json({
                     success: true,
                     data: {
                         stats: {
-                            scheduled: scheduledCount,
-                            inConsultation: inConsultationCount,
+                            scheduled: totalScheduled,
+                            inConsultation: activeInConsult,
+                            completed: completedCount,
                             avgWaitTime: `${avgWait} mins`,
-                            pendingFollowUps: pendingFollowUps
+                            pendingFollowUps: followUps
                         },
                         queue: queueWithWait,
                         reminders

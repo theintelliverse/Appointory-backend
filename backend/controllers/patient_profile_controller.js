@@ -132,10 +132,12 @@ exports.getPatientProfile = async (req, res) => {
             const medicineData = (visit.medicines || []).map(m => ({
                 name: m.name || '',
                 strength: m.strength || m.amount || '',
+                amount: m.amount || m.strength || '',
                 whenToTake: m.whenToTake || m.time || '',
-                time: m.whenToTake || m.time || '',
+                time: m.time || m.whenToTake || '',
                 beforeAfter: m.beforeAfter || '',
-                duration: m.duration || '',
+                duration: m.duration || m.total || '',
+                total: m.total || m.duration || '',
                 instructions: m.instructions || m.notes || ''
             }));
             return {
@@ -168,10 +170,12 @@ exports.getPatientProfile = async (req, res) => {
             medicines: (h.medicines || []).map(m => ({
                 name: m.name || '',
                 strength: m.strength || m.amount || '',
+                amount: m.amount || m.strength || '',
                 whenToTake: m.whenToTake || m.time || '',
-                time: m.whenToTake || m.time || '',
+                time: m.time || m.whenToTake || '',
                 beforeAfter: m.beforeAfter || '',
-                duration: m.duration || '',
+                duration: m.duration || m.total || '',
+                total: m.total || m.duration || '',
                 instructions: m.instructions || m.notes || ''
             }))
         }));

@@ -70,12 +70,16 @@ const patientSchema = mongoose.Schema({
       {
         name: String,
         strength: String,
+        amount: String,
         whenToTake: String,
+        time: String,
         beforeAfter: String,
         duration: String,
+        total: String,
         instructions: String
       }
-    ]
+    ],
+    followUpDate: { type: Date }
   }],
 
   documents: [{
