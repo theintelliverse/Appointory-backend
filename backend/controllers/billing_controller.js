@@ -947,7 +947,7 @@ exports.verifyPublicInvoice = async (req, res) => {
     }
 };
 
-// --- 🩺 FETCH DOCTORS FOR BILLING SELECTION ---
+// --- FETCH DOCTORS FOR BILLING SELECTION ---
 exports.getBillingDoctors = async (req, res) => {
     try {
         const clinicId = req.user.clinicId;

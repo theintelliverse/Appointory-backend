@@ -159,8 +159,8 @@ exports.toggleAvailability = async (req, res) => {
 
         await user.save();
 
-        // 📢 DEBUG LOG
-        console.log(`🩺 Emit: doctorStatusChanged for Dr. ${user.name} to Room: ${user.clinicId}`);
+        // DEBUG LOG
+        console.log(`[Socket] Emit: doctorStatusChanged for Dr. ${user.name} to Room: ${user.clinicId}`);
         if (req.io) {
             req.io.to(user.clinicId.toString()).emit('doctorStatusChanged', {
                 doctorId: user._id,
@@ -652,7 +652,7 @@ exports.archiveStaff = async (req, res) => {
     }
 };
 
-// --- 🩺 GET ALL PRESCRIPTIONS FOR A DOCTOR ---
+// --- GET ALL PRESCRIPTIONS FOR A DOCTOR ---
 exports.getAllPrescriptions = async (req, res) => {
     try {
         const doctorId = req.user.id || req.user._id;
